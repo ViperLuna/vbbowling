@@ -110,6 +110,54 @@ html, body {
 
 .btn-ghost:hover { filter: brightness(1.15); }
 
+.ball-panel {
+  display: none;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 12px 14px;
+  border: 1px solid #2a3140;
+}
+
+.ball-panel.open {
+  display: grid;
+}
+
+.ball-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ball-field label {
+  font-size: 0.72rem;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.ball-field label span {
+  color: var(--accent-2);
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 600;
+}
+
+.ball-field select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid #333c4a;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 0.85rem;
+}
+
+.ball-field input[type="range"] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
 .scoreboard {
   display: grid;
   grid-template-columns: repeat(10, 1fr);

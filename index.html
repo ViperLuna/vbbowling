@@ -16,10 +16,40 @@
           <input type="checkbox" id="dynamic-oil-toggle" checked />
           Dynamic Transition
         </label>
+        <button id="ball-toggle-btn" class="btn btn-ghost">Ball Setup</button>
         <button id="reset-lane-btn" class="btn btn-ghost">Reset Lane</button>
         <button id="new-game-btn" class="btn btn-ghost">New Game</button>
       </div>
     </header>
+
+    <div id="ball-panel" class="ball-panel">
+      <div class="ball-field">
+        <label for="coverstock-select">Coverstock</label>
+        <select id="coverstock-select">
+          <option value="plastic">Plastic</option>
+          <option value="urethane">Urethane</option>
+          <option value="solid">Solid Reactive</option>
+          <option value="pearl">Pearl Reactive</option>
+          <option value="hybrid">Hybrid Reactive</option>
+        </select>
+      </div>
+      <div class="ball-field">
+        <label for="weight-slider">Weight <span id="weight-value"></span></label>
+        <input type="range" id="weight-slider" min="6" max="16" step="1" />
+      </div>
+      <div class="ball-field">
+        <label for="length-slider">Length <span id="length-value"></span></label>
+        <input type="range" id="length-slider" step="1" />
+      </div>
+      <div class="ball-field">
+        <label for="hook-slider">Hook <span id="hook-value"></span></label>
+        <input type="range" id="hook-slider" step="1" />
+      </div>
+      <div class="ball-field">
+        <label for="backend-slider">Backend <span id="backend-value"></span></label>
+        <input type="range" id="backend-slider" step="1" />
+      </div>
+    </div>
 
     <div id="scoreboard" class="scoreboard"></div>
 

@@ -68,6 +68,46 @@
     10: [6, 9],
   };
 
+  // ---------- Ball creator ----------
+  // Length/Hook/Backend on a 0-15 scale, matching the shape of real ball spec
+  // sheets. Each coverstock caps what's achievable — a plastic ball can't have
+  // real hook no matter the slider, a solid reactive can't skid forever.
+  // absorption/carrydown drive how each coverstock interacts with lane oil
+  // (see OIL_ABSORPTION_RATE/OIL_CARRYDOWN_RATE below, now per-ball not fixed).
+  const COVERSTOCKS = {
+    plastic: { label: 'Plastic', lengthRange: [14, 15], hookRange: [1, 3], backendRange: [0, 1], absorption: 0.01, carrydown: 0.55 },
+    urethane: { label: 'Urethane', lengthRange: [10, 12], hookRange: [6, 9], backendRange: [4, 7], absorption: 0.01, carrydown: 0.75 },
+    solid: { label: 'Solid Reactive', lengthRange: [3, 6], hookRange: [10, 15], backendRange: [7, 12], absorption: 0.09, carrydown: 0.05 },
+    pearl: { label: 'Pearl Reactive', lengthRange: [12, 14], hookRange: [8, 12], backendRange: [10, 14], absorption: 0.04, carrydown: 0.15 },
+    hybrid: { label: 'Hybrid Reactive', lengthRange: [7, 9], hookRange: [7, 11], backendRange: [6, 9], absorption: 0.06, carrydown: 0.30 },
+  };
+
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+  function defaultLoadout() {
+    const cs = COVERSTOCKS.hybrid;
+    return {
+      coverstock: 'hybrid',
+      weight: 15,
+      length: (cs.lengthRange[0] + cs.lengthRange[1]) / 2,
+      hook: (cs.hookRange[0] + cs.hookRange[1]) / 2,
+      backend: (cs.backendRange[0] + cs.backendRange[1]) / 2,
+    };
+  }
+
+  function clampLoadoutToCoverstock(loadout) {
+    const cs = COVERSTOCKS[loadout.coverstock];
+    loadout.length = clamp(loadout.length, cs.lengthRange[0], cs.lengthRange[1]);
+    loadout.hook = clamp(loadout.hook, cs.hookRange[0], cs.hookRange[1]);
+    loadout.backend = clamp(loadout.backend, cs.backendRange[0], cs.backendRange[1]);
+  }
+
+  function ramp(s, threshold) {
+    if (s <= threshold) return 0;
+    const t = (s - threshold) / (1 - threshold);
+    return t * t;
+  }
+
   // ---------- Oil pattern (real Kegel "2022 Starting House Pattern" data) ----------
   const PATTERN_FORWARD = [
     [2, 1, 1850, 0, 0],
@@ -90,9 +130,6 @@
     [2, 0, 0, 7, 0],
   ];
   const DIST_FT = 44; // 0..43 ft, 1ft buckets
-
-  const OIL_ABSORPTION_RATE = 0.05;
-  const OIL_CARRYDOWN_RATE = 0.35;
   const CARRYDOWN_SPREAD_FT = 4;
 
   function boxBlur1D(arr, radius) {
@@ -197,6 +234,7 @@
     cameraTarget: { ...CAMERA_AIM },
     insetAlpha: 1,
     insetTarget: 1,
+    loadout: defaultLoadout(),
   };
   game.oilMax = oilGridMax(game.oil);
 
@@ -210,6 +248,17 @@
     newGameBtn: document.getElementById('new-game-btn'),
     resetLaneBtn: document.getElementById('reset-lane-btn'),
     dynamicOilToggle: document.getElementById('dynamic-oil-toggle'),
+    ballToggleBtn: document.getElementById('ball-toggle-btn'),
+    ballPanel: document.getElementById('ball-panel'),
+    coverstockSelect: document.getElementById('coverstock-select'),
+    weightSlider: document.getElementById('weight-slider'),
+    weightValue: document.getElementById('weight-value'),
+    lengthSlider: document.getElementById('length-slider'),
+    lengthValue: document.getElementById('length-value'),
+    hookSlider: document.getElementById('hook-slider'),
+    hookValue: document.getElementById('hook-value'),
+    backendSlider: document.getElementById('backend-slider'),
+    backendValue: document.getElementById('backend-value'),
     meterBlocks: {
       power: document.getElementById('meter-power'),
       accuracy: document.getElementById('meter-accuracy'),
@@ -307,18 +356,38 @@
       : `Frame ${game.frameIndex + 1} / 10`;
   }
 
-  // ---------- Ball path & physics (unchanged shot model) ----------
+  // ---------- Ball path & physics ----------
+  // Three phases along s (0=foul line, 1=deck): skid (no curve), hook (the
+  // main break, engaging at skidS and ramping through the rest of the shot),
+  // and backend (an extra late kick near the pins). Length pushes skidS out
+  // (longer = later break), Hook sets the main break's strength, Backend adds
+  // the late-kick strength. Power still affects timing: a slower ball gets
+  // more time to hook, same relationship real bowlers rely on.
   function pathNX(params, s) {
-    return 0.5 + params.angleOffset * s + params.curveAmount * s * s;
+    return 0.5
+      + params.angleOffset * s
+      + params.spinDir * params.hookMag * ramp(s, params.skidS)
+      + params.spinDir * params.backendMag * ramp(s, params.backendS);
   }
 
-  function computeShot(power, accuracy, spin, rack) {
+  function computeShot(power, accuracy, spin, rack, loadout) {
     const accDev = (accuracy - 0.5) * 2;
     const spinDev = (spin - 0.5) * 2;
     const angleOffset = accDev * 0.32;
     const powerFactor = 1.5 - power * 0.9;
-    const curveAmount = spinDev * 0.55 * powerFactor;
-    const params = { angleOffset, curveAmount };
+
+    const lengthNorm = loadout.length / 15;
+    const hookNorm = loadout.hook / 15;
+    const backendNorm = loadout.backend / 15;
+
+    const params = {
+      angleOffset,
+      spinDir: spinDev,
+      hookMag: hookNorm * 0.75 * powerFactor,
+      backendMag: backendNorm * 0.55 * powerFactor,
+      skidS: 0.12 + lengthNorm * 0.55,
+      backendS: 0.82,
+    };
 
     let finalS = 1.0;
     let guttered = false;
@@ -335,7 +404,8 @@
 
     const knocked = [];
     if (!guttered) {
-      const knockRadius = KNOCK_RADIUS_BASE * (0.8 + power * 0.6);
+      const weightFactor = 0.8 + ((loadout.weight - 6) / 10) * 0.2; // 6lb..16lb -> 0.8..1.0
+      const knockRadius = KNOCK_RADIUS_BASE * (0.8 + power * 0.6) * weightFactor;
       PIN_DEFS.forEach((p) => {
         if (!rack[p.id]) return;
         const bx = pathNX(params, p.s);
@@ -367,6 +437,7 @@
 
   function applyOilTransition(shot) {
     if (!game.dynamicOil) return;
+    const cs = COVERSTOCKS[game.loadout.coverstock];
     const grid = game.oil;
     const STEPS = 150;
     for (let i = 0; i <= STEPS; i++) {
@@ -379,9 +450,9 @@
       const b = board - 1;
       const current = grid[f][b];
       if (current <= 0) continue;
-      const removed = current * OIL_ABSORPTION_RATE;
+      const removed = current * cs.absorption;
       grid[f][b] = current - removed;
-      const deposit = (removed * OIL_CARRYDOWN_RATE) / CARRYDOWN_SPREAD_FT;
+      const deposit = (removed * cs.carrydown) / CARRYDOWN_SPREAD_FT;
       for (let k = 1; k <= CARRYDOWN_SPREAD_FT; k++) {
         const ff = f + k;
         if (ff >= DIST_FT) break;
@@ -724,7 +795,7 @@
     setMessage('Rolling...');
 
     const { power, accuracy, spin } = game.locked;
-    const shot = computeShot(power, accuracy, spin, game.rack);
+    const shot = computeShot(power, accuracy, spin, game.rack, game.loadout);
     game._shotFinalS = shot.finalS;
 
     const durationMs = 1500 - power * 550;
@@ -759,7 +830,9 @@
     const powerPct = Math.round(shot.params ? game.locked.power * 100 : 0);
     const accDesc = describeAccuracy(game.locked.accuracy);
     const spinDesc = describeSpin(game.locked.spin, game.locked.power);
+    const ballLabel = COVERSTOCKS[game.loadout.coverstock].label;
     el.lastRollStats.innerHTML = `
+      <span>Ball: <b>${ballLabel} (${game.loadout.weight}lb)</b></span>
       <span>Power: <b>${powerPct}%</b></span>
       <span>Aim: <b>${accDesc}</b></span>
       <span>Spin: <b>${spinDesc}</b></span>
@@ -884,6 +957,48 @@
     requestAnimationFrame(loop);
   }
 
+  // ---------- Ball panel UI ----------
+  function syncBallPanelUI() {
+    const cs = COVERSTOCKS[game.loadout.coverstock];
+    el.coverstockSelect.value = game.loadout.coverstock;
+
+    el.weightSlider.value = game.loadout.weight;
+    el.weightValue.textContent = `${game.loadout.weight} lb`;
+
+    [
+      ['length', el.lengthSlider, el.lengthValue, cs.lengthRange],
+      ['hook', el.hookSlider, el.hookValue, cs.hookRange],
+      ['backend', el.backendSlider, el.backendValue, cs.backendRange],
+    ].forEach(([key, slider, label, range]) => {
+      slider.min = range[0];
+      slider.max = range[1];
+      slider.value = game.loadout[key];
+      label.textContent = `${game.loadout[key].toFixed(0)} (${range[0]}–${range[1]} for ${cs.label})`;
+    });
+  }
+
+  el.coverstockSelect.addEventListener('change', (e) => {
+    game.loadout.coverstock = e.target.value;
+    clampLoadoutToCoverstock(game.loadout);
+    syncBallPanelUI();
+  });
+  el.weightSlider.addEventListener('input', (e) => {
+    game.loadout.weight = Number(e.target.value);
+    el.weightValue.textContent = `${game.loadout.weight} lb`;
+  });
+  [['length', el.lengthSlider, el.lengthValue], ['hook', el.hookSlider, el.hookValue], ['backend', el.backendSlider, el.backendValue]]
+    .forEach(([key, slider, label]) => {
+      slider.addEventListener('input', (e) => {
+        game.loadout[key] = Number(e.target.value);
+        const cs = COVERSTOCKS[game.loadout.coverstock];
+        const range = key === 'length' ? cs.lengthRange : key === 'hook' ? cs.hookRange : cs.backendRange;
+        label.textContent = `${game.loadout[key].toFixed(0)} (${range[0]}–${range[1]} for ${cs.label})`;
+      });
+    });
+  el.ballToggleBtn.addEventListener('click', () => {
+    el.ballPanel.classList.toggle('open');
+  });
+
   // ---------- Wiring ----------
   el.actionBtn.addEventListener('click', handleAction);
   el.newGameBtn.addEventListener('click', newGame);
@@ -901,6 +1016,7 @@
     }
   });
 
+  syncBallPanelUI();
   startNewRoll();
   requestAnimationFrame(loop);
 })();
