@@ -48,6 +48,113 @@
     10: [6, 9],
   };
 
+  // ---------- Oil pattern (real Kegel pattern data) ----------
+  // "2022 Starting House Pattern" — exact rows from the pattern's FORWARD/REVERSE
+  // LOADS DATA tables: [board (L/R mirrored, 1=gutter..20=center), loads, t_oil (uL), distA, distB]
+  const PATTERN_FORWARD = [
+    [2, 1, 1850, 0, 0],
+    [9, 1, 1150, 0, 3],
+    [10, 2, 2100, 3, 8],
+    [11, 3, 2850, 8, 15],
+    [12, 4, 3400, 15, 25],
+    [13, 1, 750, 25, 28],
+    [2, 0, 0, 28, 38],
+    [2, 0, 0, 38, 43],
+  ];
+  const PATTERN_REVERSE = [
+    [2, 0, 0, 40, 37],
+    [12, 2, 1700, 37, 32],
+    [11, 2, 1900, 32, 27],
+    [10, 3, 3150, 27, 19],
+    [9, 3, 3450, 19, 12],
+    [8, 1, 1250, 12, 9],
+    [2, 1, 1850, 9, 7],
+    [2, 0, 0, 7, 0],
+  ];
+
+  const BOARD_COUNT = 39; // real mirrored numbering: 1 (gutter) .. 20 (center) .. 1 (gutter)
+  const DIST_FT = 44; // 0..43 ft, 1ft buckets
+  const LANE_FEET = 62; // approx real feet from foul line to the pin deck, for s <-> feet mapping
+
+  // Placeholder "medium/hybrid" coverstock oil-transition rates, per roll.
+  // Real values will come from the ball creator once it exists.
+  const OIL_ABSORPTION_RATE = 0.05; // fraction of oil under the ball's path removed per pass
+  const OIL_CARRYDOWN_RATE = 0.35; // fraction of absorbed oil redeposited further down the lane
+  const CARRYDOWN_SPREAD_FT = 4; // how many feet ahead carrydown gets smeared into
+
+  function boxBlur1D(arr, radius) {
+    const n = arr.length;
+    const out = new Float64Array(n);
+    let sum = 0;
+    for (let i = 0; i < Math.min(radius, n); i++) sum += arr[i];
+    for (let i = 0; i < n; i++) {
+      const add = i + radius < n ? arr[i + radius] : 0;
+      const sub = i - radius - 1 >= 0 ? arr[i - radius - 1] : 0;
+      if (i > 0) sum += add - sub;
+      let count = Math.min(i + radius, n - 1) - Math.max(i - radius, 0) + 1;
+      out[i] = sum / count;
+    }
+    return out;
+  }
+
+  function blurGrid(grid, boardRadius, distRadius, iterations) {
+    let g = grid;
+    for (let it = 0; it < iterations; it++) {
+      // blur along board axis (rows)
+      g = g.map((row) => Array.from(boxBlur1D(row, boardRadius)));
+      // blur along distance axis (columns)
+      const cols = g[0].length;
+      const transposed = Array.from({ length: cols }, (_, c) => g.map((row) => row[c]));
+      const blurredCols = transposed.map((col) => Array.from(boxBlur1D(col, distRadius)));
+      g = Array.from({ length: g.length }, (_, r) => blurredCols.map((col) => col[r]));
+    }
+    return g;
+  }
+
+  function buildOilGrid() {
+    // grid[distFt][boardIdx], boardIdx 0..38 => board 1..39
+    const grid = Array.from({ length: DIST_FT }, () => new Array(BOARD_COUNT).fill(0));
+
+    function applyPass(rows) {
+      rows.forEach(([board, loads, tOil, dA, dB]) => {
+        if (tOil <= 0) return;
+        const lo = board; // left board (1-indexed)
+        const hi = BOARD_COUNT + 1 - board; // right board (mirrored)
+        const width = hi - lo + 1;
+        const density = tOil / width;
+        const d0 = Math.min(dA, dB);
+        const d1 = Math.max(dA, dB) === d0 ? d0 + 1 : Math.max(dA, dB);
+        for (let f = Math.floor(d0); f < Math.ceil(d1) && f < DIST_FT; f++) {
+          if (f < 0) continue;
+          for (let b = lo; b <= hi; b++) {
+            grid[f][b - 1] += density;
+          }
+        }
+      });
+    }
+
+    applyPass(PATTERN_FORWARD);
+    applyPass(PATTERN_REVERSE);
+
+    return blurGrid(grid, 2, 3, 3);
+  }
+
+  function oilGridMax(grid) {
+    let max = 0;
+    for (const row of grid) for (const v of row) if (v > max) max = v;
+    return max || 1;
+  }
+
+  function boardToNx(board1to39) {
+    return (board1to39 - 0.5) / BOARD_COUNT;
+  }
+  function nxToBoard(nx) {
+    return Math.min(BOARD_COUNT, Math.max(1, Math.round(nx * BOARD_COUNT + 0.5)));
+  }
+  function sToFeet(s) {
+    return s * LANE_FEET;
+  }
+
   // ---------- Meters ----------
   const METERS = {
     power: { period: 900 },
@@ -83,7 +190,11 @@
     trail: [],
     prevTrail: [],
     lastStats: null,
+    oil: buildOilGrid(),
+    oilMax: 0,
+    dynamicOil: true,
   };
+  game.oilMax = oilGridMax(game.oil);
 
   // ---------- DOM refs ----------
   const el = {
@@ -93,6 +204,8 @@
     scoreboard: document.getElementById('scoreboard'),
     lastRollStats: document.getElementById('last-roll-stats'),
     newGameBtn: document.getElementById('new-game-btn'),
+    resetLaneBtn: document.getElementById('reset-lane-btn'),
+    dynamicOilToggle: document.getElementById('dynamic-oil-toggle'),
     meterBlocks: {
       power: document.getElementById('meter-power'),
       accuracy: document.getElementById('meter-accuracy'),
@@ -313,6 +426,27 @@
     }
   }
 
+  function drawOil() {
+    const grid = game.oil;
+    const max = game.oilMax;
+    const cellW = LANE_W / BOARD_COUNT;
+    const cellH = LANE_SPAN * (1 / LANE_FEET); // px per foot
+    for (let f = 0; f < DIST_FT; f++) {
+      const s0 = f / LANE_FEET;
+      const y = toY(s0);
+      const row = grid[f];
+      for (let b = 0; b < BOARD_COUNT; b++) {
+        const v = row[b];
+        if (v <= 0) continue;
+        const alpha = Math.min(0.85, (v / max) * 0.85);
+        if (alpha < 0.02) continue;
+        const x = LANE_LEFT + b * cellW;
+        ctx.fillStyle = `rgba(255, 175, 60, ${alpha})`;
+        ctx.fillRect(x, y - cellH - 0.5, cellW + 0.5, cellH + 0.5);
+      }
+    }
+  }
+
   function drawTrail(trail, alpha) {
     if (trail.length < 2) return;
     ctx.strokeStyle = `rgba(255, 210, 60, ${alpha})`;
@@ -383,6 +517,7 @@
 
   function render() {
     drawLane();
+    drawOil();
     drawTrail(game.prevTrail, 0.18);
     drawTrail(game.trail, 0.85);
     drawPins();
@@ -492,6 +627,38 @@
     requestAnimationFrame(step);
   }
 
+  function applyOilTransition(shot) {
+    if (!game.dynamicOil) return;
+    const grid = game.oil;
+    const STEPS = 150;
+    for (let i = 0; i <= STEPS; i++) {
+      const s = (i / STEPS) * shot.finalS;
+      const nx = pathNX(shot.params, s);
+      if (nx < 0 || nx > 1) continue;
+      const board = nxToBoard(nx);
+      const feet = sToFeet(s);
+      const f = Math.max(0, Math.min(DIST_FT - 1, Math.floor(feet)));
+      const b = board - 1;
+      const current = grid[f][b];
+      if (current <= 0) continue;
+      const removed = current * OIL_ABSORPTION_RATE;
+      grid[f][b] = current - removed;
+
+      // carrydown: smear a portion of the removed oil into the next few feet down-lane
+      const deposit = removed * OIL_CARRYDOWN_RATE / CARRYDOWN_SPREAD_FT;
+      for (let k = 1; k <= CARRYDOWN_SPREAD_FT; k++) {
+        const ff = f + k;
+        if (ff >= DIST_FT) break;
+        grid[ff][b] += deposit;
+      }
+    }
+  }
+
+  function resetLane() {
+    game.oil = buildOilGrid();
+    game.oilMax = oilGridMax(game.oil);
+  }
+
   function finishRoll(shot) {
     const before = Object.keys(game.rack).filter((id) => game.rack[id]).length;
     shot.knocked.forEach((id) => { game.rack[id] = false; });
@@ -500,6 +667,7 @@
 
     game.prevTrail = game.trail;
     game.ball = null;
+    applyOilTransition(shot);
 
     const powerPct = Math.round(shot.params ? game.locked.power * 100 : 0);
     const accDesc = describeAccuracy(game.locked.accuracy);
@@ -618,6 +786,7 @@
     game.trail = [];
     game.prevTrail = [];
     game.ball = null;
+    resetLane();
     el.lastRollStats.innerHTML = '';
     startNewRoll();
   }
@@ -632,6 +801,13 @@
   // ---------- Wiring ----------
   el.actionBtn.addEventListener('click', handleAction);
   el.newGameBtn.addEventListener('click', newGame);
+  el.resetLaneBtn.addEventListener('click', () => {
+    resetLane();
+    setMessage('Lane reset — fresh pattern loaded.');
+  });
+  el.dynamicOilToggle.addEventListener('change', (e) => {
+    game.dynamicOil = e.target.checked;
+  });
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
       e.preventDefault();
