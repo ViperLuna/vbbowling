@@ -22,6 +22,7 @@
   const BOARD_WIDTH_FT = (LANE_WIDTH_IN / BOARD_COUNT) / 12;
   const LANE_WIDTH_FT = LANE_WIDTH_IN / 12;
   const LANE_TOTAL_FT = 64; // a little past the back pin row (~62.6ft) for visual pit margin
+  const GUTTER_WIDTH_FT = 9.25 / 12; // regulation gutter: 9.25in wide each side, ~1.875in deep
 
   function boardToNx(board) {
     return (board - 0.5) / BOARD_COUNT;
@@ -454,6 +455,22 @@
     grad.addColorStop(1, '#3a2618');
     c.fillStyle = grad;
     c.fillRect(view.laneLeft, topY, view.laneWpx, Math.max(0, bottomY - topY));
+
+    // gutters: regulation 9.25in recessed channel flanking each side of the lane
+    const gutterHpx = Math.max(0, bottomY - topY);
+    const gutterWpx = GUTTER_WIDTH_FT * view.pxPerFt;
+    const gutterGrad = c.createLinearGradient(0, topY, 0, bottomY);
+    gutterGrad.addColorStop(0, '#6b7280');
+    gutterGrad.addColorStop(1, '#454b54');
+    c.fillStyle = gutterGrad;
+    c.fillRect(view.laneLeft - gutterWpx, topY, gutterWpx, gutterHpx);
+    c.fillRect(view.laneRight, topY, gutterWpx, gutterHpx);
+    c.strokeStyle = 'rgba(0,0,0,0.55)';
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.moveTo(view.laneLeft, topY); c.lineTo(view.laneLeft, bottomY);
+    c.moveTo(view.laneRight, topY); c.lineTo(view.laneRight, bottomY);
+    c.stroke();
 
     // board grain lines
     c.strokeStyle = 'rgba(85,56,31,0.4)';
