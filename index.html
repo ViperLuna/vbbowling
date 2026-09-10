@@ -23,6 +23,22 @@
     </header>
 
     <div id="ball-panel" class="ball-panel">
+      <div id="ball-gate" class="ball-gate">
+        <p class="ball-gate__copy">
+          The Ball Creator is only available to repo collaborators. Paste a
+          GitHub personal access token — a fine-grained token scoped
+          read-only to just this repo is enough — and it'll be checked
+          against GitHub's own permission on <code>ViperLuna/vbbowling</code>.
+          The token is only used for this one check and isn't saved anywhere.
+        </p>
+        <div class="ball-gate__row">
+          <input type="password" id="gate-token-input" placeholder="GitHub personal access token" autocomplete="off" />
+          <button id="gate-verify-btn" class="btn btn-primary">Verify Access</button>
+        </div>
+        <div id="gate-status" class="ball-gate__status"></div>
+      </div>
+
+      <div id="ball-fields" class="ball-fields" hidden>
       <div class="ball-field">
         <label for="coverstock-select">Coverstock</label>
         <select id="coverstock-select">
@@ -48,6 +64,7 @@
       <div class="ball-field">
         <label for="backend-slider">Backend <span id="backend-value"></span></label>
         <input type="range" id="backend-slider" step="1" />
+      </div>
       </div>
     </div>
 

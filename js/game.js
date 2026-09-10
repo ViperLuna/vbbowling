@@ -68,6 +68,29 @@
     10: [6, 9],
   };
 
+  // ---------- Ball creator access gate ----------
+  const GATE_REPO_OWNER = 'ViperLuna';
+  const GATE_REPO_NAME = 'vbbowling';
+
+  async function checkRepoWriteAccess(token) {
+    const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' };
+    const userRes = await fetch('https://api.github.com/user', { headers });
+    if (!userRes.ok) throw new Error(userRes.status === 401 ? 'Invalid token.' : `GitHub error (${userRes.status}).`);
+    const user = await userRes.json();
+
+    const permRes = await fetch(
+      `https://api.github.com/repos/${GATE_REPO_OWNER}/${GATE_REPO_NAME}/collaborators/${encodeURIComponent(user.login)}/permission`,
+      { headers }
+    );
+    if (!permRes.ok) {
+      if (permRes.status === 404 || permRes.status === 403) return { allowed: false, login: user.login };
+      throw new Error(`GitHub error checking permission (${permRes.status}).`);
+    }
+    const permData = await permRes.json();
+    const allowed = permData.permission === 'admin' || permData.permission === 'write';
+    return { allowed, login: user.login };
+  }
+
   // ---------- Ball creator ----------
   // Length/Hook/Backend on a 0-15 scale, matching the shape of real ball spec
   // sheets. Each coverstock caps what's achievable — a plastic ball can't have
@@ -235,6 +258,7 @@
     insetAlpha: 1,
     insetTarget: 1,
     loadout: defaultLoadout(),
+    ballCreatorUnlocked: sessionStorage.getItem('ballCreatorUnlocked') === '1',
   };
   game.oilMax = oilGridMax(game.oil);
 
@@ -250,6 +274,11 @@
     dynamicOilToggle: document.getElementById('dynamic-oil-toggle'),
     ballToggleBtn: document.getElementById('ball-toggle-btn'),
     ballPanel: document.getElementById('ball-panel'),
+    ballGate: document.getElementById('ball-gate'),
+    ballFields: document.getElementById('ball-fields'),
+    gateTokenInput: document.getElementById('gate-token-input'),
+    gateVerifyBtn: document.getElementById('gate-verify-btn'),
+    gateStatus: document.getElementById('gate-status'),
     coverstockSelect: document.getElementById('coverstock-select'),
     weightSlider: document.getElementById('weight-slider'),
     weightValue: document.getElementById('weight-value'),
@@ -995,8 +1024,42 @@
         label.textContent = `${game.loadout[key].toFixed(0)} (${range[0]}–${range[1]} for ${cs.label})`;
       });
     });
+  function syncGateUI() {
+    el.ballGate.hidden = game.ballCreatorUnlocked;
+    el.ballFields.hidden = !game.ballCreatorUnlocked;
+  }
+
+  function setGateStatus(msg, cls) {
+    el.gateStatus.textContent = msg;
+    el.gateStatus.className = 'ball-gate__status' + (cls ? ' ' + cls : '');
+  }
+
+  el.gateVerifyBtn.addEventListener('click', async () => {
+    const token = el.gateTokenInput.value.trim();
+    if (!token) { setGateStatus('Paste a token first.', 'err'); return; }
+    el.gateVerifyBtn.disabled = true;
+    setGateStatus('Checking with GitHub...', '');
+    try {
+      const { allowed, login } = await checkRepoWriteAccess(token);
+      if (allowed) {
+        game.ballCreatorUnlocked = true;
+        sessionStorage.setItem('ballCreatorUnlocked', '1');
+        setGateStatus(`Access granted — welcome, ${login}.`, 'ok');
+        syncGateUI();
+      } else {
+        setGateStatus(`${login} doesn't have write access to this repo.`, 'err');
+      }
+    } catch (err) {
+      setGateStatus(err.message || 'Could not verify token.', 'err');
+    } finally {
+      el.gateTokenInput.value = '';
+      el.gateVerifyBtn.disabled = false;
+    }
+  });
+
   el.ballToggleBtn.addEventListener('click', () => {
     el.ballPanel.classList.toggle('open');
+    if (el.ballPanel.classList.contains('open')) syncGateUI();
   });
 
   // ---------- Wiring ----------
@@ -1017,6 +1080,7 @@
   });
 
   syncBallPanelUI();
+  syncGateUI();
   startNewRoll();
   requestAnimationFrame(loop);
 })();

@@ -158,6 +158,61 @@ html, body {
   width: 100%;
 }
 
+.ball-gate {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ball-gate__copy {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.ball-gate__copy code {
+  background: var(--panel-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.78rem;
+}
+
+.ball-gate__row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ball-gate__row input {
+  flex: 1;
+  min-width: 200px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid #333c4a;
+  border-radius: 6px;
+  padding: 9px 10px;
+  font-size: 0.85rem;
+}
+
+.ball-gate__row .btn {
+  width: auto;
+  padding: 9px 16px;
+}
+
+.ball-gate__status {
+  font-size: 0.82rem;
+  min-height: 18px;
+}
+
+.ball-gate__status.ok { color: var(--good); }
+.ball-gate__status.err { color: var(--power); }
+
+.ball-fields:not([hidden]) {
+  display: contents;
+}
+
 .scoreboard {
   display: grid;
   grid-template-columns: repeat(10, 1fr);
