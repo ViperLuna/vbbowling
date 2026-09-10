@@ -71,9 +71,15 @@
   // ---------- Ball creator access gate ----------
   const GATE_REPO_OWNER = 'ViperLuna';
   const GATE_REPO_NAME = 'vbbowling';
+  const GATE_BRANCH = 'claude/bowling-game-prototype-2z1g8e';
+  const BALLS_PATH = 'data/balls.json';
+
+  function githubHeaders(token) {
+    return { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' };
+  }
 
   async function checkRepoWriteAccess(token) {
-    const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' };
+    const headers = githubHeaders(token);
     const userRes = await fetch('https://api.github.com/user', { headers });
     if (!userRes.ok) throw new Error(userRes.status === 401 ? 'Invalid token.' : `GitHub error (${userRes.status}).`);
     const user = await userRes.json();
@@ -89,6 +95,41 @@
     const permData = await permRes.json();
     const allowed = permData.permission === 'admin' || permData.permission === 'write';
     return { allowed, login: user.login };
+  }
+
+  function utf8ToBase64(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+
+  // Publishes an updated balls array back to the repo via the GitHub Contents
+  // API, as a real commit on GATE_BRANCH. Requires the sha of the file's
+  // current version (fetched fresh each time) to avoid clobbering concurrent edits.
+  async function publishBallsFile(token, ballsArray, commitMessage) {
+    const headers = githubHeaders(token);
+    const getUrl = `https://api.github.com/repos/${GATE_REPO_OWNER}/${GATE_REPO_NAME}/contents/${BALLS_PATH}?ref=${GATE_BRANCH}`;
+    const getRes = await fetch(getUrl, { headers });
+    if (!getRes.ok) throw new Error(`Could not read current balls.json (${getRes.status}).`);
+    const currentFile = await getRes.json();
+
+    const newContent = JSON.stringify({ balls: ballsArray }, null, 2) + '\n';
+    const putRes = await fetch(
+      `https://api.github.com/repos/${GATE_REPO_OWNER}/${GATE_REPO_NAME}/contents/${BALLS_PATH}`,
+      {
+        method: 'PUT',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: commitMessage,
+          content: utf8ToBase64(newContent),
+          sha: currentFile.sha,
+          branch: GATE_BRANCH,
+        }),
+      }
+    );
+    if (!putRes.ok) {
+      const body = await putRes.json().catch(() => ({}));
+      throw new Error(body.message || `Could not publish (${putRes.status}).`);
+    }
+    return putRes.json();
   }
 
   // ---------- Ball creator ----------
@@ -115,6 +156,7 @@
       length: (cs.lengthRange[0] + cs.lengthRange[1]) / 2,
       hook: (cs.hookRange[0] + cs.hookRange[1]) / 2,
       backend: (cs.backendRange[0] + cs.backendRange[1]) / 2,
+      label: cs.label,
     };
   }
 
@@ -123,6 +165,25 @@
     loadout.length = clamp(loadout.length, cs.lengthRange[0], cs.lengthRange[1]);
     loadout.hook = clamp(loadout.hook, cs.hookRange[0], cs.hookRange[1]);
     loadout.backend = clamp(loadout.backend, cs.backendRange[0], cs.backendRange[1]);
+  }
+
+  function presetLoadoutForCoverstock(key) {
+    const cs = COVERSTOCKS[key];
+    return {
+      coverstock: key,
+      weight: 15,
+      length: (cs.lengthRange[0] + cs.lengthRange[1]) / 2,
+      hook: (cs.hookRange[0] + cs.hookRange[1]) / 2,
+      backend: (cs.backendRange[0] + cs.backendRange[1]) / 2,
+      label: cs.label,
+    };
+  }
+
+  function loadoutFromBall(ball) {
+    return {
+      coverstock: ball.coverstock, weight: ball.weight, length: ball.length, hook: ball.hook, backend: ball.backend,
+      label: `${ball.name} ($${ball.price})`,
+    };
   }
 
   function ramp(s, threshold) {
@@ -258,7 +319,12 @@
     insetAlpha: 1,
     insetTarget: 1,
     loadout: defaultLoadout(),
-    ballCreatorUnlocked: sessionStorage.getItem('ballCreatorUnlocked') === '1',
+    draft: presetLoadoutForCoverstock('hybrid'),
+    ballCreatorUnlocked: false,
+    githubToken: null,
+    githubLogin: null,
+    catalog: [],
+    editingBallId: null, // null = drafting a brand new ball
   };
   game.oilMax = oilGridMax(game.oil);
 
@@ -288,6 +354,13 @@
     hookValue: document.getElementById('hook-value'),
     backendSlider: document.getElementById('backend-slider'),
     backendValue: document.getElementById('backend-value'),
+    playBallSelect: document.getElementById('play-ball-select'),
+    editTargetSelect: document.getElementById('edit-target-select'),
+    ballNameInput: document.getElementById('ball-name-input'),
+    ballPriceInput: document.getElementById('ball-price-input'),
+    publishBtn: document.getElementById('publish-btn'),
+    forgetTokenBtn: document.getElementById('forget-token-btn'),
+    publishStatus: document.getElementById('publish-status'),
     meterBlocks: {
       power: document.getElementById('meter-power'),
       accuracy: document.getElementById('meter-accuracy'),
@@ -859,7 +932,7 @@
     const powerPct = Math.round(shot.params ? game.locked.power * 100 : 0);
     const accDesc = describeAccuracy(game.locked.accuracy);
     const spinDesc = describeSpin(game.locked.spin, game.locked.power);
-    const ballLabel = COVERSTOCKS[game.loadout.coverstock].label;
+    const ballLabel = game.loadout.label || COVERSTOCKS[game.loadout.coverstock].label;
     el.lastRollStats.innerHTML = `
       <span>Ball: <b>${ballLabel} (${game.loadout.weight}lb)</b></span>
       <span>Power: <b>${powerPct}%</b></span>
@@ -987,13 +1060,86 @@
   }
 
   // ---------- Ball panel UI ----------
-  function syncBallPanelUI() {
-    const cs = COVERSTOCKS[game.loadout.coverstock];
-    el.coverstockSelect.value = game.loadout.coverstock;
+  const TOKEN_STORAGE_KEY = 'ballCreatorGithubToken';
 
-    el.weightSlider.value = game.loadout.weight;
-    el.weightValue.textContent = `${game.loadout.weight} lb`;
+  function catalogBallById(id) {
+    return game.catalog.find((b) => b.id === id) || null;
+  }
 
+  // "Play With" is open to everyone: the 5 base coverstocks plus whatever's
+  // been published to the shared catalog.
+  function syncPlayBallSelect() {
+    const prevValue = el.playBallSelect.value;
+    el.playBallSelect.innerHTML = '';
+    Object.entries(COVERSTOCKS).forEach(([key, cs]) => {
+      const opt = document.createElement('option');
+      opt.value = `preset:${key}`;
+      opt.textContent = `${cs.label} (starter)`;
+      el.playBallSelect.appendChild(opt);
+    });
+    game.catalog.forEach((ball) => {
+      const opt = document.createElement('option');
+      opt.value = `catalog:${ball.id}`;
+      opt.textContent = `${ball.name} — $${ball.price}`;
+      el.playBallSelect.appendChild(opt);
+    });
+    if ([...el.playBallSelect.options].some((o) => o.value === prevValue)) {
+      el.playBallSelect.value = prevValue;
+    }
+  }
+
+  el.playBallSelect.addEventListener('change', (e) => {
+    const [kind, id] = e.target.value.split(':');
+    if (kind === 'preset') {
+      game.loadout = presetLoadoutForCoverstock(id);
+    } else {
+      const ball = catalogBallById(id);
+      if (ball) game.loadout = loadoutFromBall(ball);
+    }
+  });
+
+  // "Editing" (creator-only): a fresh draft, or an existing catalog ball to revise.
+  function syncEditTargetSelect() {
+    const prevValue = el.editTargetSelect.value;
+    el.editTargetSelect.innerHTML = '';
+    const newOpt = document.createElement('option');
+    newOpt.value = 'new';
+    newOpt.textContent = '+ New Ball';
+    el.editTargetSelect.appendChild(newOpt);
+    game.catalog.forEach((ball) => {
+      const opt = document.createElement('option');
+      opt.value = ball.id;
+      opt.textContent = `${ball.name} — $${ball.price}`;
+      el.editTargetSelect.appendChild(opt);
+    });
+    if ([...el.editTargetSelect.options].some((o) => o.value === prevValue)) {
+      el.editTargetSelect.value = prevValue;
+    }
+  }
+
+  function loadDraftFromTarget() {
+    const target = el.editTargetSelect.value;
+    if (target === 'new') {
+      game.editingBallId = null;
+      game.draft = presetLoadoutForCoverstock('hybrid');
+      el.ballNameInput.value = '';
+      el.ballPriceInput.value = 0;
+    } else {
+      const ball = catalogBallById(target);
+      if (!ball) return;
+      game.editingBallId = ball.id;
+      game.draft = loadoutFromBall(ball);
+      el.ballNameInput.value = ball.name;
+      el.ballPriceInput.value = ball.price;
+    }
+    syncBallFormUI();
+  }
+
+  function syncBallFormUI() {
+    const cs = COVERSTOCKS[game.draft.coverstock];
+    el.coverstockSelect.value = game.draft.coverstock;
+    el.weightSlider.value = game.draft.weight;
+    el.weightValue.textContent = `${game.draft.weight} lb`;
     [
       ['length', el.lengthSlider, el.lengthValue, cs.lengthRange],
       ['hook', el.hookSlider, el.hookValue, cs.hookRange],
@@ -1001,32 +1147,40 @@
     ].forEach(([key, slider, label, range]) => {
       slider.min = range[0];
       slider.max = range[1];
-      slider.value = game.loadout[key];
-      label.textContent = `${game.loadout[key].toFixed(0)} (${range[0]}–${range[1]} for ${cs.label})`;
+      slider.value = game.draft[key];
+      label.textContent = `${game.draft[key].toFixed(0)} (${range[0]}–${range[1]} for ${cs.label})`;
     });
   }
 
+  el.editTargetSelect.addEventListener('change', loadDraftFromTarget);
+
   el.coverstockSelect.addEventListener('change', (e) => {
-    game.loadout.coverstock = e.target.value;
-    clampLoadoutToCoverstock(game.loadout);
-    syncBallPanelUI();
+    game.draft.coverstock = e.target.value;
+    clampLoadoutToCoverstock(game.draft);
+    syncBallFormUI();
   });
   el.weightSlider.addEventListener('input', (e) => {
-    game.loadout.weight = Number(e.target.value);
-    el.weightValue.textContent = `${game.loadout.weight} lb`;
+    game.draft.weight = Number(e.target.value);
+    el.weightValue.textContent = `${game.draft.weight} lb`;
   });
   [['length', el.lengthSlider, el.lengthValue], ['hook', el.hookSlider, el.hookValue], ['backend', el.backendSlider, el.backendValue]]
     .forEach(([key, slider, label]) => {
       slider.addEventListener('input', (e) => {
-        game.loadout[key] = Number(e.target.value);
-        const cs = COVERSTOCKS[game.loadout.coverstock];
+        game.draft[key] = Number(e.target.value);
+        const cs = COVERSTOCKS[game.draft.coverstock];
         const range = key === 'length' ? cs.lengthRange : key === 'hook' ? cs.hookRange : cs.backendRange;
-        label.textContent = `${game.loadout[key].toFixed(0)} (${range[0]}–${range[1]} for ${cs.label})`;
+        label.textContent = `${game.draft[key].toFixed(0)} (${range[0]}–${range[1]} for ${cs.label})`;
       });
     });
+
+  // ---------- Gate + publishing ----------
   function syncGateUI() {
     el.ballGate.hidden = game.ballCreatorUnlocked;
     el.ballFields.hidden = !game.ballCreatorUnlocked;
+    if (game.ballCreatorUnlocked) {
+      syncEditTargetSelect();
+      loadDraftFromTarget();
+    }
   }
 
   function setGateStatus(msg, cls) {
@@ -1034,26 +1188,86 @@
     el.gateStatus.className = 'ball-gate__status' + (cls ? ' ' + cls : '');
   }
 
-  el.gateVerifyBtn.addEventListener('click', async () => {
-    const token = el.gateTokenInput.value.trim();
-    if (!token) { setGateStatus('Paste a token first.', 'err'); return; }
-    el.gateVerifyBtn.disabled = true;
-    setGateStatus('Checking with GitHub...', '');
+  function setPublishStatus(msg, cls) {
+    el.publishStatus.textContent = msg;
+    el.publishStatus.className = 'ball-gate__status ball-field--wide' + (cls ? ' ' + cls : '');
+  }
+
+  async function attemptUnlock(token, { silent } = {}) {
+    if (!silent) { el.gateVerifyBtn.disabled = true; setGateStatus('Checking with GitHub...', ''); }
     try {
       const { allowed, login } = await checkRepoWriteAccess(token);
       if (allowed) {
         game.ballCreatorUnlocked = true;
-        sessionStorage.setItem('ballCreatorUnlocked', '1');
+        game.githubToken = token;
+        game.githubLogin = login;
+        localStorage.setItem(TOKEN_STORAGE_KEY, token);
         setGateStatus(`Access granted — welcome, ${login}.`, 'ok');
         syncGateUI();
       } else {
-        setGateStatus(`${login} doesn't have write access to this repo.`, 'err');
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        setGateStatus(silent ? 'Saved token no longer has write access — sign in again.' : `${login} doesn't have write access to this repo.`, 'err');
       }
     } catch (err) {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
       setGateStatus(err.message || 'Could not verify token.', 'err');
     } finally {
-      el.gateTokenInput.value = '';
       el.gateVerifyBtn.disabled = false;
+    }
+  }
+
+  el.gateVerifyBtn.addEventListener('click', () => {
+    const token = el.gateTokenInput.value.trim();
+    if (!token) { setGateStatus('Paste a token first.', 'err'); return; }
+    el.gateTokenInput.value = '';
+    attemptUnlock(token);
+  });
+
+  el.forgetTokenBtn.addEventListener('click', () => {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    game.ballCreatorUnlocked = false;
+    game.githubToken = null;
+    game.githubLogin = null;
+    setGateStatus('Token forgotten.', '');
+    syncGateUI();
+  });
+
+  el.publishBtn.addEventListener('click', async () => {
+    const name = el.ballNameInput.value.trim();
+    if (!name) { setPublishStatus('Give the ball a name first.', 'err'); return; }
+    const price = Math.max(0, Number(el.ballPriceInput.value) || 0);
+
+    const ball = {
+      id: game.editingBallId || `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36)}`,
+      name,
+      price,
+      ...game.draft,
+      createdBy: game.editingBallId ? catalogBallById(game.editingBallId)?.createdBy || game.githubLogin : game.githubLogin,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextCatalog = game.editingBallId
+      ? game.catalog.map((b) => (b.id === ball.id ? ball : b))
+      : [...game.catalog, ball];
+
+    el.publishBtn.disabled = true;
+    setPublishStatus('Publishing to the repo...', '');
+    try {
+      await publishBallsFile(
+        game.githubToken,
+        nextCatalog,
+        `${game.editingBallId ? 'Update' : 'Add'} ball "${name}" via Ball Creator (${game.githubLogin})`
+      );
+      game.catalog = nextCatalog;
+      game.editingBallId = ball.id;
+      syncPlayBallSelect();
+      syncEditTargetSelect();
+      el.editTargetSelect.value = ball.id;
+      setPublishStatus(`Published "${name}" to the repo.`, 'ok');
+    } catch (err) {
+      setPublishStatus(err.message || 'Publish failed.', 'err');
+    } finally {
+      el.publishBtn.disabled = false;
     }
   });
 
@@ -1061,6 +1275,19 @@
     el.ballPanel.classList.toggle('open');
     if (el.ballPanel.classList.contains('open')) syncGateUI();
   });
+
+  async function loadCatalog() {
+    try {
+      const res = await fetch('./data/balls.json', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      game.catalog = Array.isArray(data.balls) ? data.balls : [];
+      syncPlayBallSelect();
+      if (game.ballCreatorUnlocked) syncEditTargetSelect();
+    } catch {
+      // no catalog yet / offline — starter coverstocks still work fine
+    }
+  }
 
   // ---------- Wiring ----------
   el.actionBtn.addEventListener('click', handleAction);
@@ -1079,8 +1306,12 @@
     }
   });
 
-  syncBallPanelUI();
+  syncPlayBallSelect();
   syncGateUI();
+  loadCatalog();
+  const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+  if (savedToken) attemptUnlock(savedToken, { silent: true });
+
   startNewRoll();
   requestAnimationFrame(loop);
 })();

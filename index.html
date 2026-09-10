@@ -23,13 +23,17 @@
     </header>
 
     <div id="ball-panel" class="ball-panel">
+      <div class="ball-field ball-field--wide">
+        <label for="play-ball-select">Play With</label>
+        <select id="play-ball-select"></select>
+      </div>
+
       <div id="ball-gate" class="ball-gate">
         <p class="ball-gate__copy">
-          The Ball Creator is only available to repo collaborators. Paste a
-          GitHub personal access token — a fine-grained token scoped
+          Creating or editing balls is only available to repo collaborators.
+          Paste a GitHub personal access token — a fine-grained token scoped
           read-only to just this repo is enough — and it'll be checked
           against GitHub's own permission on <code>ViperLuna/vbbowling</code>.
-          The token is only used for this one check and isn't saved anywhere.
         </p>
         <div class="ball-gate__row">
           <input type="password" id="gate-token-input" placeholder="GitHub personal access token" autocomplete="off" />
@@ -39,6 +43,18 @@
       </div>
 
       <div id="ball-fields" class="ball-fields" hidden>
+      <div class="ball-field ball-field--wide">
+        <label for="edit-target-select">Editing</label>
+        <select id="edit-target-select"></select>
+      </div>
+      <div class="ball-field">
+        <label for="ball-name-input">Name</label>
+        <input type="text" id="ball-name-input" placeholder="Ball name" maxlength="40" />
+      </div>
+      <div class="ball-field">
+        <label for="ball-price-input">Price ($)</label>
+        <input type="number" id="ball-price-input" min="0" step="1" value="0" />
+      </div>
       <div class="ball-field">
         <label for="coverstock-select">Coverstock</label>
         <select id="coverstock-select">
@@ -65,6 +81,11 @@
         <label for="backend-slider">Backend <span id="backend-value"></span></label>
         <input type="range" id="backend-slider" step="1" />
       </div>
+      <div class="ball-field ball-field--wide ball-field--row">
+        <button id="publish-btn" class="btn btn-primary">Publish Ball</button>
+        <button id="forget-token-btn" class="btn btn-ghost">Forget Token</button>
+      </div>
+      <div id="publish-status" class="ball-gate__status ball-field--wide"></div>
       </div>
     </div>
 
