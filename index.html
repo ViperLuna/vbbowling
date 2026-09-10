@@ -24,7 +24,10 @@
     <div id="scoreboard" class="scoreboard"></div>
 
     <main class="playfield">
-      <canvas id="lane-canvas" width="480" height="720"></canvas>
+      <div class="canvas-wrap">
+        <canvas id="lane-canvas" width="480" height="720"></canvas>
+        <canvas id="pin-inset-canvas" class="pin-inset" width="180" height="150"></canvas>
+      </div>
 
       <div class="hud">
         <div id="message" class="message">Set your POWER — click/tap or press SPACE to lock it in</div>

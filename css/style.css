@@ -167,13 +167,34 @@ html, body {
   justify-content: center;
 }
 
+.canvas-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+}
+
 canvas#lane-canvas {
   background: var(--gutter);
   border-radius: 8px;
   width: 100%;
-  max-width: 420px;
   height: auto;
+  display: block;
   touch-action: none;
+}
+
+canvas.pin-inset {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 38%;
+  max-width: 150px;
+  height: auto;
+  background: var(--gutter);
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.15);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+  transition: opacity 0.1s linear;
+  pointer-events: none;
 }
 
 .hud {
