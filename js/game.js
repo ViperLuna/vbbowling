@@ -101,35 +101,52 @@
     return btoa(unescape(encodeURIComponent(str)));
   }
 
-  // Publishes an updated balls array back to the repo via the GitHub Contents
-  // API, as a real commit on GATE_BRANCH. Requires the sha of the file's
-  // current version (fetched fresh each time) to avoid clobbering concurrent edits.
-  async function publishBallsFile(token, ballsArray, commitMessage) {
-    const headers = githubHeaders(token);
-    const getUrl = `https://api.github.com/repos/${GATE_REPO_OWNER}/${GATE_REPO_NAME}/contents/${BALLS_PATH}?ref=${GATE_BRANCH}`;
-    const getRes = await fetch(getUrl, { headers });
-    if (!getRes.ok) throw new Error(`Could not read current balls.json (${getRes.status}).`);
-    const currentFile = await getRes.json();
+  function contentsUrl(path, ref) {
+    const base = `https://api.github.com/repos/${GATE_REPO_OWNER}/${GATE_REPO_NAME}/contents/${path}`;
+    return ref ? `${base}?ref=${ref}` : base;
+  }
 
-    const newContent = JSON.stringify({ balls: ballsArray }, null, 2) + '\n';
-    const putRes = await fetch(
-      `https://api.github.com/repos/${GATE_REPO_OWNER}/${GATE_REPO_NAME}/contents/${BALLS_PATH}`,
-      {
-        method: 'PUT',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: commitMessage,
-          content: utf8ToBase64(newContent),
-          sha: currentFile.sha,
-          branch: GATE_BRANCH,
-        }),
-      }
-    );
+  async function getRepoFileSha(token, path) {
+    const res = await fetch(contentsUrl(path, GATE_BRANCH), { headers: githubHeaders(token) });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`Could not read ${path} (${res.status}).`);
+    const data = await res.json();
+    return data.sha;
+  }
+
+  // Writes (creates or updates) a file in the repo via the Contents API, as a
+  // real commit on GATE_BRANCH. base64Content is the raw file content already
+  // base64-encoded (text or binary, GitHub's API treats both the same way).
+  async function putRepoFile(token, path, base64Content, message, sha) {
+    const putRes = await fetch(contentsUrl(path), {
+      method: 'PUT',
+      headers: { ...githubHeaders(token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, content: base64Content, sha: sha || undefined, branch: GATE_BRANCH }),
+    });
     if (!putRes.ok) {
       const body = await putRes.json().catch(() => ({}));
-      throw new Error(body.message || `Could not publish (${putRes.status}).`);
+      throw new Error(body.message || `Could not publish ${path} (${putRes.status}).`);
     }
     return putRes.json();
+  }
+
+  async function deleteRepoFile(token, path, message, sha) {
+    const res = await fetch(contentsUrl(path), {
+      method: 'DELETE',
+      headers: { ...githubHeaders(token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, sha, branch: GATE_BRANCH }),
+    });
+    if (!res.ok) throw new Error(`Could not delete ${path} (${res.status}).`);
+  }
+
+  async function publishBallsFile(token, ballsArray, commitMessage) {
+    const sha = await getRepoFileSha(token, BALLS_PATH);
+    const newContent = JSON.stringify({ balls: ballsArray }, null, 2) + '\n';
+    return putRepoFile(token, BALLS_PATH, utf8ToBase64(newContent), commitMessage, sha);
+  }
+
+  function ballImagePath(id) {
+    return `data/ball-images/${id}.png`;
   }
 
   // ---------- Ball creator ----------
@@ -325,6 +342,7 @@
     githubLogin: null,
     catalog: [],
     editingBallId: null, // null = drafting a brand new ball
+    pendingImageBase64: null,
   };
   game.oilMax = oilGridMax(game.oil);
 
@@ -359,8 +377,12 @@
     ballNameInput: document.getElementById('ball-name-input'),
     ballPriceInput: document.getElementById('ball-price-input'),
     publishBtn: document.getElementById('publish-btn'),
+    deleteBallBtn: document.getElementById('delete-ball-btn'),
     forgetTokenBtn: document.getElementById('forget-token-btn'),
     publishStatus: document.getElementById('publish-status'),
+    playBallThumb: document.getElementById('play-ball-thumb'),
+    editBallThumb: document.getElementById('edit-ball-thumb'),
+    ballImageInput: document.getElementById('ball-image-input'),
     meterBlocks: {
       power: document.getElementById('meter-power'),
       accuracy: document.getElementById('meter-accuracy'),
@@ -465,11 +487,19 @@
   // (longer = later break), Hook sets the main break's strength, Backend adds
   // the late-kick strength. Power still affects timing: a slower ball gets
   // more time to hook, same relationship real bowlers rely on.
+  // impactS/bounceMag etc. add a post-contact wobble once the ball reaches a
+  // pin (see computeShot) — inert (bounceMag 0, impactS Infinity) beforehand,
+  // so this same function is safe to use for hit-testing before contact exists.
   function pathNX(params, s) {
-    return 0.5
+    let x = 0.5
       + params.angleOffset * s
       + params.spinDir * params.hookMag * ramp(s, params.skidS)
       + params.spinDir * params.backendMag * ramp(s, params.backendS);
+    if (s > params.impactS) {
+      const t = s - params.impactS;
+      x += params.bounceMag * Math.sin(t * params.bounceFreq) * Math.exp(-t * params.bounceDamping);
+    }
+    return x;
   }
 
   function computeShot(power, accuracy, spin, rack, loadout) {
@@ -482,13 +512,14 @@
     const hookNorm = loadout.hook / 15;
     const backendNorm = loadout.backend / 15;
 
-    const params = {
+    const baseParams = {
       angleOffset,
       spinDir: spinDev,
       hookMag: hookNorm * 0.75 * powerFactor,
       backendMag: backendNorm * 0.55 * powerFactor,
       skidS: 0.12 + lengthNorm * 0.55,
       backendS: 0.82,
+      impactS: Infinity, bounceMag: 0, bounceFreq: 0, bounceDamping: 0,
     };
 
     let finalS = 1.0;
@@ -496,7 +527,7 @@
     const STEPS = 200;
     for (let i = 0; i <= STEPS; i++) {
       const s = i / STEPS;
-      const nx = pathNX(params, s);
+      const nx = pathNX(baseParams, s);
       if (nx < 0.01 || nx > 0.99) {
         finalS = s;
         guttered = true;
@@ -505,14 +536,16 @@
     }
 
     const knocked = [];
+    let impactS = Infinity;
     if (!guttered) {
       const weightFactor = 0.8 + ((loadout.weight - 6) / 10) * 0.2; // 6lb..16lb -> 0.8..1.0
       const knockRadius = KNOCK_RADIUS_BASE * (0.8 + power * 0.6) * weightFactor;
       PIN_DEFS.forEach((p) => {
         if (!rack[p.id]) return;
-        const bx = pathNX(params, p.s);
+        const bx = pathNX(baseParams, p.s);
         if (Math.abs(bx - p.nx) < knockRadius + PIN_RADIUS_NX) {
           knocked.push(p.id);
+          if (p.s < impactS) impactS = p.s;
         }
       });
 
@@ -533,6 +566,17 @@
         frontier = next;
       }
     }
+
+    // Lighter balls bounce/deflect more sharply off the pins; heavier balls
+    // still react but drive through with a smaller, quicker wobble.
+    const weightNorm = (loadout.weight - 6) / 10;
+    const params = {
+      ...baseParams,
+      impactS,
+      bounceMag: 0.05 * (1 - weightNorm) + 0.012,
+      bounceFreq: 30,
+      bounceDamping: 16,
+    };
 
     return { params, finalS, guttered, knocked };
   }
@@ -1066,6 +1110,18 @@
     return game.catalog.find((b) => b.id === id) || null;
   }
 
+  // Shows the ball's image if it has one, otherwise the gray placeholder square.
+  function setThumb(container, path) {
+    const img = container.querySelector('img');
+    if (path) {
+      img.src = `${path}?v=${Date.now()}`; // cache-bust so a just-published image shows immediately
+      img.hidden = false;
+    } else {
+      img.hidden = true;
+      img.removeAttribute('src');
+    }
+  }
+
   // "Play With" is open to everyone: the 5 base coverstocks plus whatever's
   // been published to the shared catalog.
   function syncPlayBallSelect() {
@@ -1086,15 +1142,21 @@
     if ([...el.playBallSelect.options].some((o) => o.value === prevValue)) {
       el.playBallSelect.value = prevValue;
     }
+    const [kind, id] = el.playBallSelect.value.split(':');
+    setThumb(el.playBallThumb, kind === 'catalog' ? catalogBallById(id)?.image : null);
   }
 
   el.playBallSelect.addEventListener('change', (e) => {
     const [kind, id] = e.target.value.split(':');
     if (kind === 'preset') {
       game.loadout = presetLoadoutForCoverstock(id);
+      setThumb(el.playBallThumb, null);
     } else {
       const ball = catalogBallById(id);
-      if (ball) game.loadout = loadoutFromBall(ball);
+      if (ball) {
+        game.loadout = loadoutFromBall(ball);
+        setThumb(el.playBallThumb, ball.image);
+      }
     }
   });
 
@@ -1119,11 +1181,15 @@
 
   function loadDraftFromTarget() {
     const target = el.editTargetSelect.value;
+    game.pendingImageBase64 = null;
+    el.ballImageInput.value = '';
     if (target === 'new') {
       game.editingBallId = null;
       game.draft = presetLoadoutForCoverstock('hybrid');
       el.ballNameInput.value = '';
       el.ballPriceInput.value = 0;
+      setThumb(el.editBallThumb, null);
+      el.deleteBallBtn.hidden = true;
     } else {
       const ball = catalogBallById(target);
       if (!ball) return;
@@ -1131,9 +1197,25 @@
       game.draft = loadoutFromBall(ball);
       el.ballNameInput.value = ball.name;
       el.ballPriceInput.value = ball.price;
+      setThumb(el.editBallThumb, ball.image);
+      el.deleteBallBtn.hidden = false;
     }
     syncBallFormUI();
   }
+
+  el.ballImageInput.addEventListener('change', () => {
+    const file = el.ballImageInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      // dataURL looks like "data:image/png;base64,AAAA..." — keep just the base64 part
+      game.pendingImageBase64 = reader.result.split(',')[1];
+      const img = el.editBallThumb.querySelector('img');
+      img.src = reader.result;
+      img.hidden = false;
+    };
+    reader.readAsDataURL(file);
+  });
 
   function syncBallFormUI() {
     const cs = COVERSTOCKS[game.draft.coverstock];
@@ -1236,23 +1318,33 @@
     const name = el.ballNameInput.value.trim();
     if (!name) { setPublishStatus('Give the ball a name first.', 'err'); return; }
     const price = Math.max(0, Number(el.ballPriceInput.value) || 0);
+    const existing = game.editingBallId ? catalogBallById(game.editingBallId) : null;
 
     const ball = {
       id: game.editingBallId || `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36)}`,
       name,
       price,
       ...game.draft,
-      createdBy: game.editingBallId ? catalogBallById(game.editingBallId)?.createdBy || game.githubLogin : game.githubLogin,
+      image: existing ? existing.image : null,
+      createdBy: existing ? existing.createdBy : game.githubLogin,
       updatedAt: new Date().toISOString(),
     };
 
-    const nextCatalog = game.editingBallId
-      ? game.catalog.map((b) => (b.id === ball.id ? ball : b))
-      : [...game.catalog, ball];
-
     el.publishBtn.disabled = true;
-    setPublishStatus('Publishing to the repo...', '');
     try {
+      if (game.pendingImageBase64) {
+        setPublishStatus('Uploading image...', '');
+        const imagePath = ballImagePath(ball.id);
+        const sha = await getRepoFileSha(game.githubToken, imagePath);
+        await putRepoFile(game.githubToken, imagePath, game.pendingImageBase64, `${sha ? 'Update' : 'Add'} image for "${name}" (${game.githubLogin})`, sha);
+        ball.image = imagePath;
+      }
+
+      const nextCatalog = game.editingBallId
+        ? game.catalog.map((b) => (b.id === ball.id ? ball : b))
+        : [...game.catalog, ball];
+
+      setPublishStatus('Publishing to the repo...', '');
       await publishBallsFile(
         game.githubToken,
         nextCatalog,
@@ -1260,14 +1352,44 @@
       );
       game.catalog = nextCatalog;
       game.editingBallId = ball.id;
+      game.pendingImageBase64 = null;
       syncPlayBallSelect();
       syncEditTargetSelect();
       el.editTargetSelect.value = ball.id;
+      el.deleteBallBtn.hidden = false;
+      setThumb(el.editBallThumb, ball.image);
       setPublishStatus(`Published "${name}" to the repo.`, 'ok');
     } catch (err) {
       setPublishStatus(err.message || 'Publish failed.', 'err');
     } finally {
       el.publishBtn.disabled = false;
+    }
+  });
+
+  el.deleteBallBtn.addEventListener('click', async () => {
+    const ball = game.editingBallId ? catalogBallById(game.editingBallId) : null;
+    if (!ball) return;
+    if (!confirm(`Delete "${ball.name}" for everyone? This can't be undone from here.`)) return;
+
+    el.deleteBallBtn.disabled = true;
+    setPublishStatus('Deleting...', '');
+    try {
+      const nextCatalog = game.catalog.filter((b) => b.id !== ball.id);
+      await publishBallsFile(game.githubToken, nextCatalog, `Delete ball "${ball.name}" via Ball Creator (${game.githubLogin})`);
+      if (ball.image) {
+        const sha = await getRepoFileSha(game.githubToken, ball.image).catch(() => null);
+        if (sha) await deleteRepoFile(game.githubToken, ball.image, `Delete image for "${ball.name}" (${game.githubLogin})`, sha).catch(() => {});
+      }
+      game.catalog = nextCatalog;
+      syncPlayBallSelect();
+      syncEditTargetSelect();
+      el.editTargetSelect.value = 'new';
+      loadDraftFromTarget();
+      setPublishStatus(`Deleted "${ball.name}".`, 'ok');
+    } catch (err) {
+      setPublishStatus(err.message || 'Delete failed.', 'err');
+    } finally {
+      el.deleteBallBtn.disabled = false;
     }
   });
 

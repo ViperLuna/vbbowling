@@ -23,9 +23,12 @@
     </header>
 
     <div id="ball-panel" class="ball-panel">
-      <div class="ball-field ball-field--wide">
-        <label for="play-ball-select">Play With</label>
-        <select id="play-ball-select"></select>
+      <div class="ball-field ball-field--wide ball-field--row">
+        <div class="ball-thumb" id="play-ball-thumb"><img alt="" hidden /></div>
+        <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
+          <label for="play-ball-select">Play With</label>
+          <select id="play-ball-select"></select>
+        </div>
       </div>
 
       <div id="ball-gate" class="ball-gate">
@@ -46,6 +49,13 @@
       <div class="ball-field ball-field--wide">
         <label for="edit-target-select">Editing</label>
         <select id="edit-target-select"></select>
+      </div>
+      <div class="ball-field ball-field--wide ball-field--row">
+        <div class="ball-thumb ball-thumb--lg" id="edit-ball-thumb"><img alt="" hidden /></div>
+        <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
+          <label for="ball-image-input">Ball Image (PNG)</label>
+          <input type="file" id="ball-image-input" accept="image/png" />
+        </div>
       </div>
       <div class="ball-field">
         <label for="ball-name-input">Name</label>
@@ -83,6 +93,7 @@
       </div>
       <div class="ball-field ball-field--wide ball-field--row">
         <button id="publish-btn" class="btn btn-primary">Publish Ball</button>
+        <button id="delete-ball-btn" class="btn btn-ghost" hidden>Delete Ball</button>
         <button id="forget-token-btn" class="btn btn-ghost">Forget Token</button>
       </div>
       <div id="publish-status" class="ball-gate__status ball-field--wide"></div>

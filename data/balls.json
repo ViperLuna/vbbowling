@@ -1,3 +1,17 @@
 {
-  "balls": []
+  "balls": [
+    {
+      "id": "house-ball",
+      "name": "House Ball",
+      "price": 0,
+      "coverstock": "plastic",
+      "weight": 13,
+      "length": 14.5,
+      "hook": 2,
+      "backend": 0.5,
+      "image": null,
+      "createdBy": "seed",
+      "updatedAt": null
+    }
+  ]
 }
