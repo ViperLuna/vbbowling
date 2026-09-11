@@ -289,7 +289,7 @@
   }
 
   // ---------- Meters ----------
-  const SPEED_PERIOD_MS = 900;
+  const SPEED_PERIOD_MS = 1100;
 
   function pingpong(elapsedMs, periodMs) {
     const t = (elapsedMs % periodMs) / periodMs;
@@ -1072,7 +1072,9 @@
     const shot = computeShot(game.standingBoard, effectiveAimBoard, game.spinValue, game.speedPower, game.rack, game.loadout);
     game._shotFinalS = shot.finalS;
 
-    const durationMs = 1500 - game.speedPower * 550;
+    // Slow enough to actually watch the hook/backend/bounce physics happen,
+    // roughly real bowling's ~1.8-2.8s roll time rather than a blur.
+    const durationMs = 2800 - game.speedPower * 1000;
     const startTime = performance.now();
     game.trail = [];
 

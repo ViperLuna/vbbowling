@@ -508,7 +508,40 @@ kbd {
 }
 
 @media (max-width: 640px) {
+  .app { padding: 8px; gap: 8px; }
+
+  .topbar { gap: 6px; }
   .topbar h1 { font-size: 1.15rem; }
+  .topbar-actions { font-size: 0.78rem; gap: 8px; }
+  .topbar-actions .btn { padding: 7px 10px; font-size: 0.8rem; }
+  .oil-toggle { font-size: 0.72rem; }
+
   .frame-box { min-width: 32px; padding: 4px 2px; }
   .frame-box .rolls, .frame-box .total { font-size: 0.65rem; }
+
+  .playfield { gap: 10px; }
+
+  /* Let the canvas shrink by height (the scarce dimension on a phone)
+     instead of by width, so it and the controls both fit without scrolling. */
+  .canvas-wrap {
+    width: fit-content;
+    max-width: 100%;
+    margin: 0 auto;
+  }
+
+  canvas#lane-canvas {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 42vh;
+  }
+
+  .hud { min-width: 0; gap: 8px; }
+  .setup-field { gap: 2px; }
+  .setup-field label { font-size: 0.7rem; }
+  .meter-track { height: 18px; }
+  .action-row #balk-btn { padding: 12px 14px; }
+  .last-roll-stats { font-size: 0.7rem; gap: 10px; }
+
+  .foot-note { display: none; }
 }
