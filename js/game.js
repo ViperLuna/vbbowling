@@ -327,7 +327,9 @@
 
   // Camera windows, in feet along the lane. minFt can be slightly negative
   // (a little room behind the foul line so the ball has somewhere to rest).
-  const CAMERA_AIM = { minFt: -3, maxFt: 33 };
+  // Default aim view is zoomed to just past the arrows (15ft); drag on the
+  // lane to peek further down toward the pins — see camDrag handling below.
+  const CAMERA_AIM = { minFt: -3, maxFt: 19 };
   const CAMERA_RESULT = { minFt: 55, maxFt: 65 };
 
   const game = {
@@ -353,6 +355,8 @@
     dynamicOil: true,
     camera: { ...CAMERA_AIM },
     cameraTarget: { ...CAMERA_AIM },
+    camDragActive: false,
+    camDragOffsetFt: 0,
     insetAlpha: 1,
     insetTarget: 1,
     loadout: defaultLoadout(),
@@ -657,6 +661,7 @@
   }
 
   function updateCamera() {
+    let cameraOverridden = false;
     if (game.state === 'rolling' && game.ball) {
       const ballFt = sToFeet(game.ball.s);
       const t = Math.min(1, game.ball.s / Math.max(0.01, game._shotFinalS || 1));
@@ -670,12 +675,20 @@
     } else if (game.state === 'setup' || game.state.startsWith('aim-')) {
       game.cameraTarget = CAMERA_AIM;
       game.insetTarget = 1;
+      // Dragging on the lane peeks the camera forward, 1:1 with the finger/
+      // mouse, instead of lerping — feels like scrolling, not floaty.
+      // Releasing just stops overriding it, so the lerp below eases it back.
+      if (game.camDragActive) {
+        game.camera.minFt = CAMERA_AIM.minFt + game.camDragOffsetFt;
+        game.camera.maxFt = CAMERA_AIM.maxFt + game.camDragOffsetFt;
+        cameraOverridden = true;
+      }
     } else {
       // between the roll finishing and the next aim phase: show the result at the pins
       game.cameraTarget = CAMERA_RESULT;
       game.insetTarget = 0;
     }
-    lerpCamera(game.camera, game.cameraTarget, 0.08);
+    if (!cameraOverridden) lerpCamera(game.camera, game.cameraTarget, 0.08);
     game.insetAlpha += (game.insetTarget - game.insetAlpha) * 0.15;
   }
 
@@ -1590,6 +1603,32 @@
       if (game.state === 'setup' || game.state.startsWith('aim-')) handleAction();
     }
   });
+
+  // ---------- Drag-to-peek camera (lane view only shows just past the
+  // arrows by default; drag up on it to look further toward the pins) ----------
+  const CAM_DRAG_SPAN_FT = CAMERA_AIM.maxFt - CAMERA_AIM.minFt;
+  const CAM_DRAG_MAX_OFFSET_FT = Math.max(0, LANE_TOTAL_FT - CAMERA_AIM.maxFt);
+  let camDragStartY = 0;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!(game.state === 'setup' || game.state.startsWith('aim-'))) return;
+    game.camDragActive = true;
+    game.camDragOffsetFt = 0;
+    camDragStartY = e.clientY;
+    canvas.classList.add('dragging');
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!game.camDragActive) return;
+    const rect = canvas.getBoundingClientRect();
+    const deltaFt = ((camDragStartY - e.clientY) / rect.height) * CAM_DRAG_SPAN_FT;
+    game.camDragOffsetFt = clamp(deltaFt, 0, CAM_DRAG_MAX_OFFSET_FT);
+  });
+  const endCamDrag = () => {
+    game.camDragActive = false;
+    canvas.classList.remove('dragging');
+  };
+  canvas.addEventListener('pointerup', endCamDrag);
+  canvas.addEventListener('pointercancel', endCamDrag);
 
   syncSetupSlidersUI();
   syncPlayBallSelect();

@@ -360,17 +360,25 @@ html, body {
 
 .canvas-wrap {
   position: relative;
-  width: 100%;
-  max-width: 420px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
 }
 
 canvas#lane-canvas {
   background: var(--gutter);
   border-radius: 8px;
-  width: 100%;
+  width: auto;
   height: auto;
+  max-width: 100%;
+  max-height: 70vh;
   display: block;
   touch-action: none;
+  cursor: grab;
+}
+
+canvas#lane-canvas.dragging {
+  cursor: grabbing;
 }
 
 canvas.pin-inset {
@@ -521,18 +529,9 @@ kbd {
 
   .playfield { gap: 10px; }
 
-  /* Let the canvas shrink by height (the scarce dimension on a phone)
-     instead of by width, so it and the controls both fit without scrolling. */
-  .canvas-wrap {
-    width: fit-content;
-    max-width: 100%;
-    margin: 0 auto;
-  }
-
+  /* Tighter height budget than desktop so it and the controls both fit
+     on one screen without scrolling. */
   canvas#lane-canvas {
-    width: auto;
-    height: auto;
-    max-width: 100%;
     max-height: 42vh;
   }
 
