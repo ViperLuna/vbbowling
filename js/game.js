@@ -289,16 +289,29 @@
   }
 
   // ---------- Meters ----------
-  const METERS = {
-    power: { period: 900 },
-    accuracy: { period: 1100 },
-    spin: { period: 1300 },
-  };
+  const SPEED_PERIOD_MS = 900;
 
   function pingpong(elapsedMs, periodMs) {
     const t = (elapsedMs % periodMs) / periodMs;
     return t < 0.5 ? t * 2 : 2 - t * 2;
   }
+
+  // ---------- Standing/aim geometry + accuracy difficulty ----------
+  const ARROWS_FT = 15; // real bowling arrows distance
+  const AIM_LINE_FT = 30; // how far the aim line is drawn past the foul line
+
+  // Accuracy zone widths in boards (each side of the aim board), and how long
+  // one full sweep of the dot across the lane takes. Smaller/faster = harder.
+  const DIFFICULTY = {
+    easy: { green: 2, yellow: 4, sweepMs: 1500 },
+    medium: { green: 1.5, yellow: 3, sweepMs: 1100 },
+    hard: { green: 1, yellow: 2.5, sweepMs: 850 },
+    pro: { green: 0.5, yellow: 2, sweepMs: 650 },
+  };
+  const YELLOW_ERROR_BOARDS = 1.2;
+  const RED_ERROR_BOARDS = 5;
+  const SPEED_MPH_MIN = 10;
+  const SPEED_MPH_MAX = 25;
 
   // ---------- Game state ----------
   function freshRack() {
@@ -313,7 +326,7 @@
 
   // Camera windows, in feet along the lane. minFt can be slightly negative
   // (a little room behind the foul line so the ball has somewhere to rest).
-  const CAMERA_AIM = { minFt: -3, maxFt: 24 };
+  const CAMERA_AIM = { minFt: -3, maxFt: 33 };
   const CAMERA_RESULT = { minFt: 55, maxFt: 65 };
 
   const game = {
@@ -321,9 +334,15 @@
     frameIndex: 0,
     rollInFrame: 0,
     rack: freshRack(),
-    state: 'aim-power',
+    state: 'setup', // setup | aim-speed | aim-accuracy | rolling | game-over
     stageStart: performance.now(),
-    locked: { power: 0, accuracy: 0, spin: 0 },
+    standingBoard: 20,
+    aimBoard: 20,
+    spinValue: 0, // -100..100
+    difficulty: 'medium',
+    speedPower: 0, // 0..1, locked from the speed meter
+    accuracyDot: { startPos: 0.5, startDir: 1 },
+    lastAccuracyResult: null, // { zone, errorBoards }
     ball: null,
     trail: [],
     prevTrail: [],
@@ -383,21 +402,17 @@
     playBallThumb: document.getElementById('play-ball-thumb'),
     editBallThumb: document.getElementById('edit-ball-thumb'),
     ballImageInput: document.getElementById('ball-image-input'),
-    meterBlocks: {
-      power: document.getElementById('meter-power'),
-      accuracy: document.getElementById('meter-accuracy'),
-      spin: document.getElementById('meter-spin'),
-    },
-    fills: {
-      power: document.getElementById('fill-power'),
-      accuracy: document.getElementById('fill-accuracy'),
-      spin: document.getElementById('fill-spin'),
-    },
-    cursors: {
-      power: document.getElementById('cursor-power'),
-      accuracy: document.getElementById('cursor-accuracy'),
-      spin: document.getElementById('cursor-spin'),
-    },
+    standingSlider: document.getElementById('standing-slider'),
+    standingValue: document.getElementById('standing-value'),
+    aimSlider: document.getElementById('aim-slider'),
+    aimValue: document.getElementById('aim-value'),
+    spinSlider: document.getElementById('spin-slider'),
+    spinValueEl: document.getElementById('spin-value'),
+    difficultySelect: document.getElementById('difficulty-select'),
+    speedMeterBlock: document.getElementById('meter-speed'),
+    fillSpeed: document.getElementById('fill-speed'),
+    cursorSpeed: document.getElementById('cursor-speed'),
+    balkBtn: document.getElementById('balk-btn'),
   };
 
   // ---------- Scoring ----------
@@ -491,7 +506,7 @@
   // pin (see computeShot) — inert (bounceMag 0, impactS Infinity) beforehand,
   // so this same function is safe to use for hit-testing before contact exists.
   function pathNX(params, s) {
-    let x = 0.5
+    let x = params.startNX
       + params.angleOffset * s
       + params.spinDir * params.hookMag * ramp(s, params.skidS)
       + params.spinDir * params.backendMag * ramp(s, params.backendS);
@@ -502,17 +517,23 @@
     return x;
   }
 
-  function computeShot(power, accuracy, spin, rack, loadout) {
-    const accDev = (accuracy - 0.5) * 2;
-    const spinDev = (spin - 0.5) * 2;
-    const angleOffset = accDev * 0.32;
-    const powerFactor = 1.5 - power * 0.9;
+  // standingBoard/aimBoard are real board numbers (1..39); aimBoard is where
+  // the ball crosses the arrows (ARROWS_FT down the lane) if released exactly
+  // as set up. spinValue is -100..100, speedPower is 0..1 (from the Speed meter).
+  function computeShot(standingBoard, aimBoard, spinValue, speedPower, rack, loadout) {
+    const startNX = boardToNx(standingBoard);
+    const aimNX = boardToNx(aimBoard);
+    const aimS = feetToS(ARROWS_FT);
+    const angleOffset = (aimNX - startNX) / aimS;
+    const spinDev = clamp(spinValue / 100, -1, 1);
+    const powerFactor = 1.5 - speedPower * 0.9;
 
     const lengthNorm = loadout.length / 15;
     const hookNorm = loadout.hook / 15;
     const backendNorm = loadout.backend / 15;
 
     const baseParams = {
+      startNX,
       angleOffset,
       spinDir: spinDev,
       hookMag: hookNorm * 0.75 * powerFactor,
@@ -539,7 +560,7 @@
     let impactS = Infinity;
     if (!guttered) {
       const weightFactor = 0.8 + ((loadout.weight - 6) / 10) * 0.2; // 6lb..16lb -> 0.8..1.0
-      const knockRadius = KNOCK_RADIUS_BASE * (0.8 + power * 0.6) * weightFactor;
+      const knockRadius = KNOCK_RADIUS_BASE * (0.8 + speedPower * 0.6) * weightFactor;
       PIN_DEFS.forEach((p) => {
         if (!rack[p.id]) return;
         const bx = pathNX(baseParams, p.s);
@@ -555,7 +576,7 @@
         frontier.forEach((id) => {
           (ADJACENCY[id] || []).forEach((nid) => {
             if (rack[nid] && !knocked.includes(nid)) {
-              const chance = 0.32 + power * 0.4;
+              const chance = 0.32 + speedPower * 0.4;
               if (Math.random() < chance) {
                 knocked.push(nid);
                 next.push(nid);
@@ -645,7 +666,7 @@
       if (maxFt > LANE_TOTAL_FT + 1) { minFt -= maxFt - (LANE_TOTAL_FT + 1); maxFt = LANE_TOTAL_FT + 1; }
       game.cameraTarget = { minFt, maxFt };
       game.insetTarget = 0;
-    } else if (game.state.startsWith('aim-')) {
+    } else if (game.state === 'setup' || game.state.startsWith('aim-')) {
       game.cameraTarget = CAMERA_AIM;
       game.insetTarget = 1;
     } else {
@@ -815,8 +836,79 @@
     });
   }
 
+  function bounce01(x) {
+    const m = ((x % 2) + 2) % 2;
+    return m <= 1 ? m : 2 - m;
+  }
+
+  function accuracyDotPosNow() {
+    const diff = DIFFICULTY[game.difficulty];
+    const elapsed = performance.now() - game.stageStart;
+    const t = elapsed / diff.sweepMs;
+    return bounce01(game.accuracyDot.startPos + game.accuracyDot.startDir * t);
+  }
+
+  function isAimingState() {
+    return game.state === 'setup' || game.state === 'aim-speed' || game.state === 'aim-accuracy';
+  }
+
+  function drawAimLine(view) {
+    if (!isAimingState()) return;
+    const c = ctx2(view);
+    const standingNX = boardToNx(game.standingBoard);
+    const aimNX = boardToNx(game.aimBoard);
+    const slopePerFt = (aimNX - standingNX) / ARROWS_FT;
+    const endNX = standingNX + slopePerFt * AIM_LINE_FT;
+    const x0 = view.toX(standingNX), y0 = view.toY(0);
+    const x1 = view.toX(endNX), y1 = view.toY(Math.min(AIM_LINE_FT, view.maxFt));
+    c.save();
+    c.strokeStyle = 'rgba(120, 200, 255, 0.6)';
+    c.lineWidth = 1.5;
+    c.setLineDash([6, 5]);
+    c.beginPath();
+    c.moveTo(x0, y0);
+    c.lineTo(x1, y1);
+    c.stroke();
+    c.restore();
+  }
+
+  function drawAccuracyBar(view) {
+    if (game.state !== 'aim-accuracy') return;
+    if (ARROWS_FT < view.minFt || ARROWS_FT > view.maxFt) return;
+    const c = ctx2(view);
+    const y = view.toY(ARROWS_FT);
+    const halfH = 8;
+    const diff = DIFFICULTY[game.difficulty];
+    const aimNX = boardToNx(game.aimBoard);
+    const greenHalf = diff.green / BOARD_COUNT;
+    const yellowHalf = diff.yellow / BOARD_COUNT;
+
+    c.fillStyle = 'rgba(255,80,80,0.55)';
+    c.fillRect(view.laneLeft, y - halfH, view.laneWpx, halfH * 2);
+
+    c.fillStyle = 'rgba(255,210,60,0.8)';
+    const yx0 = view.toX(clamp(aimNX - yellowHalf, 0, 1));
+    const yx1 = view.toX(clamp(aimNX + yellowHalf, 0, 1));
+    c.fillRect(yx0, y - halfH, yx1 - yx0, halfH * 2);
+
+    c.fillStyle = 'rgba(76,224,122,0.9)';
+    const gx0 = view.toX(clamp(aimNX - greenHalf, 0, 1));
+    const gx1 = view.toX(clamp(aimNX + greenHalf, 0, 1));
+    c.fillRect(gx0, y - halfH, gx1 - gx0, halfH * 2);
+
+    const dotNX = accuracyDotPosNow();
+    const dx = view.toX(dotNX);
+    c.beginPath();
+    c.arc(dx, y, 6, 0, Math.PI * 2);
+    c.fillStyle = '#ffffff';
+    c.fill();
+    c.strokeStyle = '#000';
+    c.lineWidth = 1.5;
+    c.stroke();
+  }
+
   function drawBall(view) {
-    let nx = 0.5, feet = 0;
+    let nx = boardToNx(game.standingBoard), feet = 0;
     if (game.ball) {
       nx = game.ball.nx;
       feet = sToFeet(game.ball.s);
@@ -846,8 +938,10 @@
     drawOil(view);
     drawTrail(view, game.prevTrail, 0.18);
     drawTrail(view, game.trail, 0.85);
+    drawAimLine(view);
     drawPins(view);
-    if (game.state === 'rolling' || game.ball) drawBall(view);
+    drawAccuracyBar(view);
+    drawBall(view);
 
     // inset: fixed close-up on the pin deck, fades out once you start rolling
     insetCanvas.style.opacity = String(Math.max(0, game.insetAlpha));
@@ -860,30 +954,32 @@
   }
 
   // ---------- Meter UI ----------
-  function updateMeterUI(now) {
-    ['power', 'accuracy', 'spin'].forEach((key) => {
-      const block = el.meterBlocks[key];
-      const isActive = game.state === `aim-${key}`;
-      const isDone = (key === 'power' && ['aim-accuracy', 'aim-spin', 'rolling'].includes(game.state)) ||
-        (key === 'accuracy' && ['aim-spin', 'rolling'].includes(game.state)) ||
-        (key === 'spin' && game.state === 'rolling');
-      block.classList.toggle('active', isActive);
-      block.classList.toggle('done', isDone && !isActive);
+  function speedMph(power) {
+    return Math.round(SPEED_MPH_MIN + power * (SPEED_MPH_MAX - SPEED_MPH_MIN));
+  }
 
-      let value;
-      if (isActive) {
-        value = pingpong(now - game.stageStart, METERS[key].period);
-      } else if (isDone || game.locked[key] !== undefined && game.state === 'game-over') {
-        value = game.locked[key];
-      } else if (game.state === 'aim-power' && key !== 'power') {
-        value = 0;
-      } else {
-        value = game.locked[key] || 0;
-      }
-      const pct = (value * 100).toFixed(1);
-      el.fills[key].style.width = pct + '%';
-      el.cursors[key].style.left = `calc(${pct}% - 2px)`;
-    });
+  function updateSpeedMeterUI(now) {
+    const isActive = game.state === 'aim-speed';
+    const isDone = game.state === 'aim-accuracy' || game.state === 'rolling';
+    el.speedMeterBlock.classList.toggle('active', isActive);
+    el.speedMeterBlock.classList.toggle('done', isDone);
+
+    let value;
+    if (isActive) value = pingpong(now - game.stageStart, SPEED_PERIOD_MS);
+    else value = game.speedPower;
+
+    const pct = (value * 100).toFixed(1);
+    el.fillSpeed.style.width = pct + '%';
+    el.cursorSpeed.style.left = `calc(${pct}% - 2px)`;
+    el.speedMeterBlock.querySelector('.meter-label').textContent = `SPEED (${speedMph(value)} MPH)`;
+  }
+
+  function updateSetupControlsUI() {
+    const disable = !(game.state === 'setup');
+    el.standingSlider.disabled = disable;
+    el.aimSlider.disabled = disable;
+    el.spinSlider.disabled = disable;
+    el.difficultySelect.disabled = disable;
   }
 
   // ---------- Flow control ----------
@@ -893,9 +989,9 @@
 
   function labelForState() {
     switch (game.state) {
-      case 'aim-power': return 'LOCK POWER';
-      case 'aim-accuracy': return 'LOCK ACCURACY';
-      case 'aim-spin': return 'LOCK SPIN & ROLL';
+      case 'setup': return 'SET SPEED';
+      case 'aim-speed': return 'LOCK SPEED';
+      case 'aim-accuracy': return 'LOCK ACCURACY & ROLL';
       case 'rolling': return 'ROLLING...';
       case 'game-over': return 'GAME OVER';
       default: return 'GO';
@@ -905,46 +1001,78 @@
   function updateActionButton() {
     el.actionBtn.textContent = labelForState();
     el.actionBtn.disabled = game.state === 'rolling' || game.state === 'game-over';
-  }
-
-  function beginAimStage(stage) {
-    game.state = `aim-${stage}`;
-    game.stageStart = performance.now();
-    updateActionButton();
-    const label = stage.charAt(0).toUpperCase() + stage.slice(1);
-    setMessage(`Set your ${label.toUpperCase()} — click/tap or press SPACE to lock it in`);
+    el.balkBtn.hidden = !(game.state === 'aim-speed' || game.state === 'aim-accuracy');
   }
 
   function startNewRoll() {
     game.trail = [];
-    game.ball = { nx: 0.5, s: 0 };
-    beginAimStage('power');
+    game.ball = null;
+    game.state = 'setup';
+    game.lastAccuracyResult = null;
+    updateActionButton();
+    updateSetupControlsUI();
+    setMessage('Set your stance and aim, then lock Speed and Accuracy.');
     renderScoreboard();
   }
 
+  function handleBalk() {
+    if (game.state !== 'aim-speed' && game.state !== 'aim-accuracy') return;
+    game.state = 'setup';
+    updateActionButton();
+    updateSetupControlsUI();
+    setMessage('Balk — ball back on the return. Reset your stance and aim.');
+  }
+
   function handleAction() {
-    if (game.state === 'aim-power') {
-      game.locked.power = pingpong(performance.now() - game.stageStart, METERS.power.period);
-      beginAimStage('accuracy');
+    if (game.state === 'setup') {
+      game.state = 'aim-speed';
+      game.stageStart = performance.now();
+      updateActionButton();
+      updateSetupControlsUI();
+      setMessage('Lock your SPEED — click/tap or press SPACE');
+    } else if (game.state === 'aim-speed') {
+      game.speedPower = pingpong(performance.now() - game.stageStart, SPEED_PERIOD_MS);
+      game.state = 'aim-accuracy';
+      game.stageStart = performance.now();
+      game.accuracyDot = { startPos: Math.random(), startDir: Math.random() < 0.5 ? -1 : 1 };
+      updateActionButton();
+      setMessage('Lock your ACCURACY — click/tap or press SPACE');
     } else if (game.state === 'aim-accuracy') {
-      game.locked.accuracy = pingpong(performance.now() - game.stageStart, METERS.accuracy.period);
-      beginAimStage('spin');
-    } else if (game.state === 'aim-spin') {
-      game.locked.spin = pingpong(performance.now() - game.stageStart, METERS.spin.period);
-      launchBall();
+      lockAccuracyAndRoll();
     }
   }
 
-  function launchBall() {
+  function lockAccuracyAndRoll() {
+    const dotNX = accuracyDotPosNow();
+    const dotBoard = dotNX * BOARD_COUNT + 0.5;
+    const diff = DIFFICULTY[game.difficulty];
+    const distBoards = Math.abs(dotBoard - game.aimBoard);
+
+    let zone, errorBoards;
+    if (distBoards <= diff.green) {
+      zone = 'green'; errorBoards = 0;
+    } else if (distBoards <= diff.yellow) {
+      zone = 'yellow';
+      errorBoards = dotBoard < game.aimBoard ? -YELLOW_ERROR_BOARDS : YELLOW_ERROR_BOARDS;
+    } else {
+      zone = 'red';
+      errorBoards = (Math.random() * 2 - 1) * RED_ERROR_BOARDS;
+    }
+    game.lastAccuracyResult = { zone, errorBoards };
+
+    const effectiveAimBoard = clamp(game.aimBoard + errorBoards, 1, BOARD_COUNT);
+    launchBall(effectiveAimBoard);
+  }
+
+  function launchBall(effectiveAimBoard) {
     game.state = 'rolling';
     updateActionButton();
     setMessage('Rolling...');
 
-    const { power, accuracy, spin } = game.locked;
-    const shot = computeShot(power, accuracy, spin, game.rack, game.loadout);
+    const shot = computeShot(game.standingBoard, effectiveAimBoard, game.spinValue, game.speedPower, game.rack, game.loadout);
     game._shotFinalS = shot.finalS;
 
-    const durationMs = 1500 - power * 550;
+    const durationMs = 1500 - game.speedPower * 550;
     const startTime = performance.now();
     game.trail = [];
 
@@ -973,15 +1101,19 @@
     game.ball = null;
     applyOilTransition(shot);
 
-    const powerPct = Math.round(shot.params ? game.locked.power * 100 : 0);
-    const accDesc = describeAccuracy(game.locked.accuracy);
-    const spinDesc = describeSpin(game.locked.spin, game.locked.power);
+    const mph = speedMph(game.speedPower);
+    const spinDesc = describeSpin(game.spinValue);
+    const accResult = game.lastAccuracyResult;
+    const accDesc = accResult
+      ? `${accResult.zone[0].toUpperCase()}${accResult.zone.slice(1)}${accResult.errorBoards ? ` (${accResult.errorBoards > 0 ? '+' : ''}${accResult.errorBoards.toFixed(1)} bd)` : ''}`
+      : '—';
     const ballLabel = game.loadout.label || COVERSTOCKS[game.loadout.coverstock].label;
     el.lastRollStats.innerHTML = `
       <span>Ball: <b>${ballLabel} (${game.loadout.weight}lb)</b></span>
-      <span>Power: <b>${powerPct}%</b></span>
-      <span>Aim: <b>${accDesc}</b></span>
+      <span>Stand/Aim: <b>${game.standingBoard.toFixed(2)} / ${game.aimBoard.toFixed(2)}</b></span>
+      <span>Speed: <b>${mph} MPH</b></span>
       <span>Spin: <b>${spinDesc}</b></span>
+      <span>Accuracy: <b>${accDesc}</b></span>
       <span>Pins: <b>${pinsThisRoll}</b></span>
       ${shot.guttered ? '<span style="color:#ff5c5c"><b>GUTTER</b></span>' : ''}
     `;
@@ -989,17 +1121,11 @@
     recordRoll(pinsThisRoll);
   }
 
-  function describeAccuracy(v) {
-    const dev = (v - 0.5) * 2;
-    if (Math.abs(dev) < 0.08) return 'Dead Center';
-    return (dev < 0 ? 'Left ' : 'Right ') + Math.round(Math.abs(dev) * 100) + '%';
-  }
-  function describeSpin(v, power) {
-    const dev = (v - 0.5) * 2;
-    if (Math.abs(dev) < 0.08) return 'Straight';
-    const dir = dev < 0 ? 'Hook Left' : 'Hook Right';
-    const strength = Math.abs(dev) * (1.5 - power * 0.9);
-    return `${dir} (${strength > 0.6 ? 'Heavy' : strength > 0.3 ? 'Medium' : 'Light'})`;
+  function describeSpin(v) {
+    if (Math.abs(v) < 4) return 'Straight';
+    const dir = v < 0 ? 'Hook Left' : 'Hook Right';
+    const mag = Math.abs(v);
+    return `${dir} (${mag > 65 ? 'Heavy' : mag > 30 ? 'Medium' : 'Light'})`;
   }
 
   function recordRoll(pinCount) {
@@ -1087,7 +1213,7 @@
     game.frameIndex = 0;
     game.rollInFrame = 0;
     game.rack = freshRack();
-    game.locked = { power: 0, accuracy: 0, spin: 0 };
+    game.speedPower = 0;
     game.trail = [];
     game.prevTrail = [];
     game.ball = null;
@@ -1098,7 +1224,7 @@
 
   // ---------- Loop ----------
   function loop(now) {
-    updateMeterUI(now);
+    updateSpeedMeterUI(now);
     render();
     requestAnimationFrame(loop);
   }
@@ -1411,8 +1537,36 @@
     }
   }
 
+  // ---------- Setup sliders wiring ----------
+  function syncSetupSlidersUI() {
+    el.standingSlider.value = game.standingBoard;
+    el.standingValue.textContent = game.standingBoard.toFixed(2);
+    el.aimSlider.value = game.aimBoard;
+    el.aimValue.textContent = game.aimBoard.toFixed(2);
+    el.spinSlider.value = game.spinValue;
+    el.spinValueEl.textContent = game.spinValue > 0 ? `+${game.spinValue}` : String(game.spinValue);
+    el.difficultySelect.value = game.difficulty;
+  }
+
+  el.standingSlider.addEventListener('input', (e) => {
+    game.standingBoard = Number(e.target.value);
+    el.standingValue.textContent = game.standingBoard.toFixed(2);
+  });
+  el.aimSlider.addEventListener('input', (e) => {
+    game.aimBoard = Number(e.target.value);
+    el.aimValue.textContent = game.aimBoard.toFixed(2);
+  });
+  el.spinSlider.addEventListener('input', (e) => {
+    game.spinValue = Number(e.target.value);
+    el.spinValueEl.textContent = game.spinValue > 0 ? `+${game.spinValue}` : String(game.spinValue);
+  });
+  el.difficultySelect.addEventListener('change', (e) => {
+    game.difficulty = e.target.value;
+  });
+
   // ---------- Wiring ----------
   el.actionBtn.addEventListener('click', handleAction);
+  el.balkBtn.addEventListener('click', handleBalk);
   el.newGameBtn.addEventListener('click', newGame);
   el.resetLaneBtn.addEventListener('click', () => {
     resetLane();
@@ -1424,10 +1578,11 @@
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
       e.preventDefault();
-      if (game.state.startsWith('aim-')) handleAction();
+      if (game.state === 'setup' || game.state.startsWith('aim-')) handleAction();
     }
   });
 
+  syncSetupSlidersUI();
   syncPlayBallSelect();
   syncGateUI();
   loadCatalog();

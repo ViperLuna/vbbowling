@@ -251,6 +251,56 @@ html, body {
   display: block;
 }
 
+.setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.setup-field label {
+  font-size: 0.75rem;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+}
+
+.setup-field label span {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+
+.setup-field input[type="range"] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+.setup-field select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid #333c4a;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 0.85rem;
+}
+
+.meter-fill--speed {
+  background: var(--good) !important;
+  opacity: 0.7 !important;
+}
+
+.action-row {
+  display: flex;
+  gap: 10px;
+}
+
+.action-row #action-btn {
+  flex: 1;
+}
+
+.action-row #balk-btn {
+  width: auto;
+  padding: 14px 18px;
+}
+
 .scoreboard {
   display: grid;
   grid-template-columns: repeat(10, 1fr);

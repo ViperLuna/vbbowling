@@ -109,43 +109,51 @@
       </div>
 
       <div class="hud">
-        <div id="message" class="message">Set your POWER — click/tap or press SPACE to lock it in</div>
+        <div id="message" class="message">Set your stance and aim, then lock Speed and Accuracy.</div>
 
-        <div class="meter-block" id="meter-power">
-          <div class="meter-label">POWER</div>
+        <div class="setup-field">
+          <label for="standing-slider">Standing Board <span id="standing-value"></span></label>
+          <input type="range" id="standing-slider" min="1" max="39" step="0.05" />
+        </div>
+        <div class="setup-field">
+          <label for="aim-slider">Aim Board (at the arrows) <span id="aim-value"></span></label>
+          <input type="range" id="aim-slider" min="1" max="39" step="0.05" />
+        </div>
+        <div class="setup-field">
+          <label for="spin-slider">Spin <span id="spin-value"></span></label>
+          <input type="range" id="spin-slider" min="-100" max="100" step="1" value="0" />
+        </div>
+        <div class="setup-field">
+          <label for="difficulty-select">Difficulty</label>
+          <select id="difficulty-select">
+            <option value="easy">Easy</option>
+            <option value="medium" selected>Medium</option>
+            <option value="hard">Hard</option>
+            <option value="pro">Pro</option>
+          </select>
+        </div>
+
+        <div class="meter-block" id="meter-speed">
+          <div class="meter-label">SPEED</div>
           <div class="meter-track">
-            <div class="meter-fill" id="fill-power"></div>
-            <div class="meter-cursor" id="cursor-power"></div>
+            <div class="meter-fill meter-fill--speed" id="fill-speed"></div>
+            <div class="meter-cursor" id="cursor-speed"></div>
           </div>
         </div>
 
-        <div class="meter-block" id="meter-accuracy">
-          <div class="meter-label">ACCURACY</div>
-          <div class="meter-track">
-            <div class="meter-zone" id="zone-accuracy"></div>
-            <div class="meter-fill" id="fill-accuracy"></div>
-            <div class="meter-cursor" id="cursor-accuracy"></div>
-          </div>
+        <div class="action-row">
+          <button id="action-btn" class="btn btn-primary">SET SPEED</button>
+          <button id="balk-btn" class="btn btn-ghost" hidden>Balk</button>
         </div>
-
-        <div class="meter-block" id="meter-spin">
-          <div class="meter-label">SPIN</div>
-          <div class="meter-track">
-            <div class="meter-mid"></div>
-            <div class="meter-fill" id="fill-spin"></div>
-            <div class="meter-cursor" id="cursor-spin"></div>
-          </div>
-        </div>
-
-        <button id="action-btn" class="btn btn-primary">LOCK POWER</button>
 
         <div class="last-roll-stats" id="last-roll-stats"></div>
       </div>
     </main>
 
     <footer class="foot-note">
-      Tap the button (or press <kbd>Space</kbd>) three times per roll to lock Power, then Accuracy, then Spin.
-      Timing near the center of each bar is safest — the edges are riskier but more rewarding.
+      Drag or arrow-key the Standing/Aim/Spin sliders any time before you roll. Tap the button
+      (or press <kbd>Space</kbd>) to lock Speed, then Accuracy — the accuracy bar shows right on
+      the lane. <kbd>Balk</kbd> backs out and returns the ball if you locked in too early.
     </footer>
   </div>
 
