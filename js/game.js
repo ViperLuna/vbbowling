@@ -1177,16 +1177,26 @@
     }
   }
 
+  // Pause on a scored frame's result before resetting the rack, so a strike
+  // (or a bonus-roll fresh rack) actually shows the fallen pins instead of
+  // snapping straight back to a full rack while the camera is still on them.
+  function startNewRollWithFreshRack() {
+    setTimeout(() => {
+      game.rack = freshRack();
+      startNewRoll();
+    }, 900);
+  }
+
   function handleTenthFrame(frame, pinCount) {
     const r = frame.rolls;
     if (r.length === 1) {
       if (r[0] === 10) {
-        game.rack = freshRack();
         setMessage('STRIKE! Bonus ball — fresh rack.');
+        startNewRollWithFreshRack();
       } else {
         setMessage(`${pinCount} pins. Go for the spare!`);
+        setTimeout(startNewRoll, 900);
       }
-      setTimeout(startNewRoll, 900);
     } else if (r.length === 2) {
       const strikeFirst = r[0] === 10;
       const spareMade = !strikeFirst && r[0] + r[1] === 10;
@@ -1195,13 +1205,11 @@
         setMessage(`${pinCount} pins. One more roll!`);
         setTimeout(startNewRoll, 900);
       } else if (doubleStrike) {
-        game.rack = freshRack();
         setMessage('Another STRIKE! Final bonus roll — fresh rack.');
-        setTimeout(startNewRoll, 900);
+        startNewRollWithFreshRack();
       } else if (spareMade) {
-        game.rack = freshRack();
         setMessage('SPARE! Bonus roll — fresh rack.');
-        setTimeout(startNewRoll, 900);
+        startNewRollWithFreshRack();
       } else {
         endGame();
       }
@@ -1213,11 +1221,11 @@
   function advanceFrame() {
     game.frameIndex += 1;
     game.rollInFrame = 0;
-    game.rack = freshRack();
     if (game.frameIndex >= 10) {
+      game.rack = freshRack();
       endGame();
     } else {
-      setTimeout(startNewRoll, 900);
+      startNewRollWithFreshRack();
     }
   }
 
