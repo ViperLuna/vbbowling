@@ -71,7 +71,7 @@
   // ---------- Ball creator access gate ----------
   const GATE_REPO_OWNER = 'ViperLuna';
   const GATE_REPO_NAME = 'vbbowling';
-  const GATE_BRANCH = 'claude/bowling-game-prototype-2z1g8e';
+  const GATE_BRANCH = 'main';
   const BALLS_PATH = 'data/balls.json';
 
   function githubHeaders(token) {
