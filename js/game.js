@@ -312,6 +312,7 @@
   const RED_ERROR_BOARDS = 5;
   const SPEED_MPH_MIN = 10;
   const SPEED_MPH_MAX = 25;
+  const FT_PER_SEC_PER_MPH = 5280 / 3600;
 
   // ---------- Game state ----------
   function freshRack() {
@@ -1072,9 +1073,15 @@
     const shot = computeShot(game.standingBoard, effectiveAimBoard, game.spinValue, game.speedPower, game.rack, game.loadout);
     game._shotFinalS = shot.finalS;
 
-    // Slow enough to actually watch the hook/backend/bounce physics happen,
-    // roughly real bowling's ~1.8-2.8s roll time rather than a blur.
-    const durationMs = 2800 - game.speedPower * 1000;
+    // Real time-of-flight: USBC/manufacturer measurements put an average
+    // pro roll (~16.7mph) at about 2.5s to cover the 60ft to the headpin.
+    // Drive the animation off the same MPH shown in the HUD and the shot's
+    // actual travel distance instead of a hand-tuned duration.
+    const mph = speedMph(game.speedPower);
+    const distanceFt = sToFeet(shot.finalS);
+    // Floor it so an early gutter (a few feet of real travel) still animates
+    // instead of the ball vanishing off the foul line in a single frame.
+    const durationMs = Math.max(500, (distanceFt / (mph * FT_PER_SEC_PER_MPH)) * 1000);
     const startTime = performance.now();
     game.trail = [];
 
