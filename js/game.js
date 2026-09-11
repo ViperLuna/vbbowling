@@ -1606,8 +1606,11 @@
 
   // ---------- Drag-to-peek camera (lane view only shows just past the
   // arrows by default; drag up on it to look further toward the pins) ----------
-  const CAM_DRAG_SPAN_FT = CAMERA_AIM.maxFt - CAMERA_AIM.minFt;
+  // A drag covering the full displayed canvas height should comfortably
+  // reach the pin deck, not just the camera's own (much smaller) default
+  // span — that took a full-length drag to barely reach the hook phase.
   const CAM_DRAG_MAX_OFFSET_FT = Math.max(0, LANE_TOTAL_FT - CAMERA_AIM.maxFt);
+  const CAM_DRAG_SENSITIVITY_FT = CAM_DRAG_MAX_OFFSET_FT / 0.7; // ~70% of a full-height drag maxes it out
   let camDragStartY = 0;
   canvas.addEventListener('pointerdown', (e) => {
     if (!(game.state === 'setup' || game.state.startsWith('aim-'))) return;
@@ -1620,7 +1623,7 @@
   canvas.addEventListener('pointermove', (e) => {
     if (!game.camDragActive) return;
     const rect = canvas.getBoundingClientRect();
-    const deltaFt = ((camDragStartY - e.clientY) / rect.height) * CAM_DRAG_SPAN_FT;
+    const deltaFt = ((camDragStartY - e.clientY) / rect.height) * CAM_DRAG_SENSITIVITY_FT;
     game.camDragOffsetFt = clamp(deltaFt, 0, CAM_DRAG_MAX_OFFSET_FT);
   });
   const endCamDrag = () => {
