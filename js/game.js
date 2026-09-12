@@ -48,25 +48,25 @@
   PIN_ROWS.forEach((row, rowIdx) => {
     const feet = FOUL_TO_HEADPIN_FT + rowIdx * PIN_ROW_DEPTH_FT;
     row.ids.forEach((id, i) => {
-      const board = 20 + row.lateralFt[i] / BOARD_WIDTH_FT;
-      PIN_DEFS.push({ id, feet, board, nx: boardToNx(board), s: feetToS(feet) });
+      const lateralFt = row.lateralFt[i];
+      const board = 20 + lateralFt / BOARD_WIDTH_FT;
+      PIN_DEFS.push({ id, feet, lateralFt, board, nx: boardToNx(board), s: feetToS(feet) });
     });
   });
-  const PIN_RADIUS_NX = 0.024;
-  const KNOCK_RADIUS_BASE = 0.050;
+  const PIN_RADIUS_NX = 0.024; // visual drawing radius only, in fraction-of-lane-width units
 
-  const ADJACENCY = {
-    1: [2, 3],
-    2: [1, 4, 5],
-    3: [1, 5, 6],
-    4: [2, 7, 8],
-    5: [2, 3, 4, 6, 8, 9],
-    6: [3, 5, 9, 10],
-    7: [4, 8],
-    8: [4, 5, 7, 9],
-    9: [5, 6, 8, 10],
-    10: [6, 9],
-  };
+  // Real-world radii, in feet, used for the pin-action physics below.
+  const BALL_RADIUS_FT = 0.354; // ~8.5in diameter ball
+  const PIN_RADIUS_FT = 0.198; // ~4.75in belly diameter pin
+  const BALL_PIN_CONTACT_FT = BALL_RADIUS_FT + PIN_RADIUS_FT;
+  const PIN_PIN_CONTACT_FT = PIN_RADIUS_FT * 2;
+
+  function nxToLateralFt(nx) {
+    return (nx * BOARD_COUNT + 0.5 - 20) * BOARD_WIDTH_FT;
+  }
+  function lateralFtToNx(lateralFt) {
+    return ((lateralFt / BOARD_WIDTH_FT) + 20 - 0.5) / BOARD_COUNT;
+  }
 
   // ---------- Ball creator access gate ----------
   const GATE_REPO_OWNER = 'ViperLuna';
@@ -357,6 +357,8 @@
     cameraTarget: { ...CAMERA_AIM },
     camDragActive: false,
     camDragOffsetFt: 0,
+    pinTrails: null,
+    pinElapsedS: 0,
     insetAlpha: 1,
     insetTarget: 1,
     loadout: defaultLoadout(),
@@ -522,6 +524,113 @@
     return x;
   }
 
+  // ---------- Pin action ----------
+  // A small real 2D physics pass: pins get actual velocity from where on the
+  // pin the ball (or another pin) struck them, slide with friction, and can
+  // knock further standing pins via real circle-circle collision. This
+  // replaces a flat per-neighbor dice roll, so hit *quality* actually matters:
+  // a dead-center hit drives a pin mostly straight (little sideways transfer,
+  // so it doesn't carry into its neighbors the way a real "high" hit doesn't),
+  // while an edge/pocket hit deflects it hard sideways into the next pin —
+  // real messenger-pin action instead of a lookup table.
+  const PINFALL_DT = 1 / 60;
+  const PINFALL_DURATION_S = 0.8;
+  const PIN_FRICTION_DECAY = 0.94; // velocity multiplier applied every timestep
+  const PIN_TOPPLE_SPEED_FT_S = 1.2; // minimum impulse for a *chain* hit to actually topple a pin
+  const PIN_TRANSFER_FRACTION = 0.65; // fraction of a striking pin's normal-velocity handed to the pin it hits
+  const BASE_PIN_LAUNCH_SPEED_FT_S = 20; // tuned so a flush, full-power hit reads as a real strike, not a nudge
+
+  function simulatePinfall(params, rack, loadout, speedPower) {
+    const weightFactor = 0.8 + ((loadout.weight - 6) / 10) * 0.2; // 6lb..16lb -> 0.8..1.0
+    const speedFactor = 0.7 + speedPower * 0.6;
+
+    const state = {};
+    PIN_DEFS.forEach((p) => {
+      state[p.id] = {
+        x: p.lateralFt, y: p.feet, vx: 0, vy: 0,
+        standing: !!rack[p.id], hit: false, moving: false, trail: [],
+      };
+    });
+
+    // A pin's outgoing velocity is set from the *normal* at first contact —
+    // the real geometric line between the two circle centers right as they
+    // touch. For a ball hit that normal naturally leans toward "forward" when
+    // the offset is small (dead-center) and toward "sideways" as the offset
+    // approaches the full contact radius (a grazing/edge hit) — no separate
+    // hand-tuned split needed, it falls out of the geometry.
+    function launchFromNormal(id, normalX, normalY, speed) {
+      const st = state[id];
+      st.vx += normalX * speed;
+      st.vy += normalY * speed;
+      st.moving = true;
+    }
+
+    let impactS = Infinity;
+    PIN_DEFS.forEach((p) => {
+      const st = state[p.id];
+      if (!st.standing) return;
+      const ballLateralFt = nxToLateralFt(pathNX(params, p.s));
+      const offsetFt = clamp(p.lateralFt - ballLateralFt, -BALL_PIN_CONTACT_FT, BALL_PIN_CONTACT_FT);
+      if (Math.abs(offsetFt) >= BALL_PIN_CONTACT_FT) return;
+      const forwardFt = Math.sqrt(Math.max(0, BALL_PIN_CONTACT_FT * BALL_PIN_CONTACT_FT - offsetFt * offsetFt));
+      const mag = Math.hypot(offsetFt, forwardFt) || 1;
+      const speed = BASE_PIN_LAUNCH_SPEED_FT_S * speedFactor * weightFactor;
+      launchFromNormal(p.id, offsetFt / mag, forwardFt / mag, speed);
+      state[p.id].hit = true; // any direct ball contact topples a real pin
+      if (p.s < impactS) impactS = p.s;
+    });
+
+    const directHitIds = Object.keys(state).filter((id) => state[id].moving);
+    if (!directHitIds.length) return { knocked: [], impactS: Infinity, trails: {} };
+
+    const steps = Math.round(PINFALL_DURATION_S / PINFALL_DT);
+    for (let step = 0; step < steps; step++) {
+      const t = step * PINFALL_DT;
+      PIN_DEFS.forEach((p) => {
+        const st = state[p.id];
+        if (!st.moving) return;
+        st.trail.push({ t, x: st.x, y: st.y });
+        st.x += st.vx * PINFALL_DT;
+        st.y += st.vy * PINFALL_DT;
+        st.vx *= PIN_FRICTION_DECAY;
+        st.vy *= PIN_FRICTION_DECAY;
+        if (Math.hypot(st.vx, st.vy) < 0.4) st.moving = false;
+      });
+      // Pin-to-pin: a moving pin can strike a still-standing, untouched pin.
+      // Standard circle collision — transfer the component of the striker's
+      // velocity along the center-to-center normal, leave the rest alone.
+      PIN_DEFS.forEach((p) => {
+        const striker = state[p.id];
+        if (!striker.moving) return;
+        PIN_DEFS.forEach((q) => {
+          if (p.id === q.id) return;
+          const target = state[q.id];
+          if (!target.standing || target.hit) return;
+          const dx = target.x - striker.x, dy = target.y - striker.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist >= PIN_PIN_CONTACT_FT || dist < 1e-4) return;
+          const nX = dx / dist, nY = dy / dist;
+          const approachSpeed = striker.vx * nX + striker.vy * nY;
+          if (approachSpeed <= 0) return; // moving apart, not a real hit
+          const transferred = approachSpeed * PIN_TRANSFER_FRACTION;
+          launchFromNormal(q.id, nX, nY, transferred);
+          striker.vx -= nX * transferred;
+          striker.vy -= nY * transferred;
+          if (transferred >= PIN_TOPPLE_SPEED_FT_S) target.hit = true;
+        });
+      });
+    }
+
+    const knocked = [];
+    const trails = {};
+    PIN_DEFS.forEach((p) => {
+      const st = state[p.id];
+      if (st.hit) knocked.push(p.id);
+      if (st.trail.length) trails[p.id] = st.trail;
+    });
+    return { knocked, impactS, trails };
+  }
+
   // standingBoard/aimBoard are real board numbers (1..39); aimBoard is where
   // the ball crosses the arrows (ARROWS_FT down the lane) if released exactly
   // as set up. spinValue is -100..100, speedPower is 0..1 (from the Speed meter).
@@ -561,36 +670,14 @@
       }
     }
 
-    const knocked = [];
+    let knocked = [];
     let impactS = Infinity;
+    let pinTrails = {};
     if (!guttered) {
-      const weightFactor = 0.8 + ((loadout.weight - 6) / 10) * 0.2; // 6lb..16lb -> 0.8..1.0
-      const knockRadius = KNOCK_RADIUS_BASE * (0.8 + speedPower * 0.6) * weightFactor;
-      PIN_DEFS.forEach((p) => {
-        if (!rack[p.id]) return;
-        const bx = pathNX(baseParams, p.s);
-        if (Math.abs(bx - p.nx) < knockRadius + PIN_RADIUS_NX) {
-          knocked.push(p.id);
-          if (p.s < impactS) impactS = p.s;
-        }
-      });
-
-      let frontier = knocked.slice();
-      for (let pass = 0; pass < 3 && frontier.length; pass++) {
-        const next = [];
-        frontier.forEach((id) => {
-          (ADJACENCY[id] || []).forEach((nid) => {
-            if (rack[nid] && !knocked.includes(nid)) {
-              const chance = 0.32 + speedPower * 0.4;
-              if (Math.random() < chance) {
-                knocked.push(nid);
-                next.push(nid);
-              }
-            }
-          });
-        });
-        frontier = next;
-      }
+      const pinfall = simulatePinfall(baseParams, rack, loadout, speedPower);
+      knocked = pinfall.knocked;
+      impactS = pinfall.impactS;
+      pinTrails = pinfall.trails;
     }
 
     // Lighter balls bounce/deflect more sharply off the pins; heavier balls
@@ -604,7 +691,7 @@
       bounceDamping: 16,
     };
 
-    return { params, finalS, guttered, knocked };
+    return { params, finalS, guttered, knocked, pinTrails };
   }
 
   function applyOilTransition(shot) {
@@ -818,13 +905,32 @@
     c.stroke();
   }
 
+  function samplePinTrail(trail, t) {
+    if (t <= trail[0].t) return trail[0];
+    const last = trail[trail.length - 1];
+    if (t >= last.t) return last;
+    const idx = Math.min(trail.length - 2, Math.floor(t / PINFALL_DT));
+    const a = trail[idx], b = trail[idx + 1];
+    const f = (t - a.t) / (b.t - a.t || 1);
+    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+  }
+
   function drawPins(view) {
     const c = ctx2(view);
+    const animating = game.state === 'rolling' && game.pinTrails;
     PIN_DEFS.forEach((p) => {
       if (p.feet < view.minFt - 1 || p.feet > view.maxFt + 1) return;
-      const standing = game.rack[p.id];
-      const x = view.toX(p.nx);
-      const y = view.toY(p.feet);
+      let standing = game.rack[p.id];
+      let lateralFt = p.lateralFt, feet = p.feet;
+      const trail = animating && game.pinTrails[p.id];
+      if (trail) {
+        const sample = samplePinTrail(trail, game.pinElapsedS);
+        lateralFt = sample.x;
+        feet = sample.y;
+        standing = false; // a pin with a live trail is already in the process of falling
+      }
+      const x = view.toX(lateralFtToNx(lateralFt));
+      const y = view.toY(feet);
       const r = PIN_RADIUS_NX * view.laneWpx;
       c.save();
       c.translate(x, y);
@@ -930,7 +1036,7 @@
     const c = ctx2(view);
     const x = view.toX(nx);
     const y = view.toY(feet);
-    const r = Math.max(3, 0.354 * view.pxPerFt); // real ball radius ~0.354ft
+    const r = Math.max(3, BALL_RADIUS_FT * view.pxPerFt);
     c.beginPath();
     c.arc(x, y, r, 0, Math.PI * 2);
     const grad = c.createRadialGradient(x - r * 0.3, y - r * 0.3, 1, x, y, r);
@@ -1095,18 +1201,33 @@
     // Floor it so an early gutter (a few feet of real travel) still animates
     // instead of the ball vanishing off the foul line in a single frame.
     const durationMs = Math.max(500, (distanceFt / (mph * FT_PER_SEC_PER_MPH)) * 1000);
+
+    // Real pin action keeps scattering for a moment after the ball reaches
+    // the deck — extend the roll's visual length to cover that instead of
+    // freezing the rack the instant the ball's own path finishes. A shot
+    // that never touches a pin (a clean miss or gutter) has nothing to wait
+    // on, so it keeps its plain travel-time duration.
+    const hasImpact = shot.params.impactS !== Infinity;
+    const impactTimeMs = hasImpact ? (shot.params.impactS / shot.finalS) * durationMs : durationMs;
+    const totalDurationMs = hasImpact ? Math.max(durationMs, impactTimeMs + PINFALL_DURATION_S * 1000) : durationMs;
+
     const startTime = performance.now();
     game.trail = [];
+    game.pinTrails = shot.pinTrails;
+    game.pinElapsedS = 0;
 
     function step(now) {
-      const t = Math.min(1, (now - startTime) / durationMs);
+      const elapsed = now - startTime;
+      const t = Math.min(1, elapsed / durationMs);
       const s = t * shot.finalS;
       const nx = pathNX(shot.params, s);
       game.ball = { nx, s };
-      game.trail.push({ nx, s });
-      if (t < 1) {
+      if (t < 1) game.trail.push({ nx, s });
+      game.pinElapsedS = Math.max(0, (elapsed - impactTimeMs) / 1000);
+      if (elapsed < totalDurationMs) {
         requestAnimationFrame(step);
       } else {
+        game.pinTrails = null;
         finishRoll(shot);
       }
     }
