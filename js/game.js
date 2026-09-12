@@ -540,7 +540,7 @@
   const PIN_TRANSFER_FRACTION = 0.65; // fraction of a striking pin's normal-velocity handed to the pin it hits
   const BASE_PIN_LAUNCH_SPEED_FT_S = 20; // tuned so a flush, full-power hit reads as a real strike, not a nudge
 
-  function simulatePinfall(params, rack, loadout, speedPower) {
+  function simulatePinfall(params, rack, loadout, speedPower, maxS) {
     const weightFactor = 0.8 + ((loadout.weight - 6) / 10) * 0.2; // 6lb..16lb -> 0.8..1.0
     const speedFactor = 0.7 + speedPower * 0.6;
 
@@ -569,6 +569,7 @@
     PIN_DEFS.forEach((p) => {
       const st = state[p.id];
       if (!st.standing) return;
+      if (p.s > maxS) return; // the ball had already left the lane before reaching this row
       const ballLateralFt = nxToLateralFt(pathNX(params, p.s));
       const offsetFt = clamp(p.lateralFt - ballLateralFt, -BALL_PIN_CONTACT_FT, BALL_PIN_CONTACT_FT);
       if (Math.abs(offsetFt) >= BALL_PIN_CONTACT_FT) return;
@@ -657,24 +658,37 @@
       impactS: Infinity, bounceMag: 0, bounceFreq: 0, bounceDamping: 0,
     };
 
-    let finalS = 1.0;
-    let guttered = false;
+    // Find where (if anywhere) the raw curve leaves the lane. Only an exit
+    // BEFORE the ball can even reach the pin deck is a real gutter ball (no
+    // pins were ever in reach); a curve that clips a pin and then keeps
+    // hooking out past the deck still gets credit for what it hit on the
+    // way through — same as a real over-hooked pocket shot.
+    let exitS = null;
     const STEPS = 200;
     for (let i = 0; i <= STEPS; i++) {
       const s = i / STEPS;
       const nx = pathNX(baseParams, s);
       if (nx < 0.01 || nx > 0.99) {
-        finalS = s;
-        guttered = true;
+        exitS = s;
         break;
       }
     }
+    const pinDeckStartS = feetToS(FOUL_TO_HEADPIN_FT);
+    const guttered = exitS !== null && exitS < pinDeckStartS;
+    const finalS = exitS !== null ? exitS : 1.0;
 
     let knocked = [];
     let impactS = Infinity;
     let pinTrails = {};
     if (!guttered) {
-      const pinfall = simulatePinfall(baseParams, rack, loadout, speedPower);
+      // The exit test tracks the ball's center against a near-exact edge
+      // threshold, but the ball itself still has physical width — give pin
+      // contact a small grace window past the nominal exit so a curve that
+      // clips a pin right at the boundary (before its edge has actually
+      // cleared the lane) still counts, instead of losing contact by a
+      // couple of inches purely from treating the ball as a point.
+      const reachS = finalS + feetToS(BALL_PIN_CONTACT_FT);
+      const pinfall = simulatePinfall(baseParams, rack, loadout, speedPower, reachS);
       knocked = pinfall.knocked;
       impactS = pinfall.impactS;
       pinTrails = pinfall.trails;
